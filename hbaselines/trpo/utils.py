@@ -1,27 +1,42 @@
-import gym
+from gym.spaces import Box
 import numpy as np
 
 from stable_baselines.common.vec_env import VecEnv
 
 
-def traj_segment_generator(policy, env, horizon, reward_giver=None, gail=False):
-    """
-    Compute target value using TD(lambda) estimator, and advantage with GAE(lambda)
+def traj_segment_generator(policy,
+                           env,
+                           horizon,
+                           reward_giver=None,
+                           gail=False):
+    """Compute target value using TD estimator, and advantage with GAE.
 
-    :param policy: (MLPPolicy) the policy
-    :param env: (Gym Environment) the environment
-    :param horizon: (int) the number of timesteps to run per batch
-    :param reward_giver: (TransitionClassifier) the reward predicter from obsevation and action
-    :param gail: (bool) Whether we are using this generator for standard trpo or with gail
-    :return: (dict) generator that returns a dict with the following keys:
+    Parameters
+    ----------
+    policy : MLPPolicy  FIXME
+        the policy
+    env : gym.Env
+        the environment
+    horizon : int
+        the number of timesteps to run per batch
+    reward_giver : TransitionClassifier  FIXME
+        the reward predictor from observation and action
+    gail : bool
+        Whether we are using this generator for standard trpo or with gail
+
+    Returns
+    -------
+    dict
+        generator that returns a dict with the following keys:
 
         - observations: (np.ndarray) observations
-        - rewards: (numpy float) rewards (if gail is used it is the predicted reward)
+        - rewards: (numpy float) rewards (if gail is used it is the predicted
+          reward)
         - true_rewards: (numpy float) if gail is used it is the original reward
         - vpred: (numpy float) action logits
         - dones: (numpy bool) dones (is end of episode, used for logging)
-        - episode_starts: (numpy bool)
-            True if first timestep of an episode, used for GAE
+        - episode_starts: (numpy bool) True if first timestep of an episode,
+          used for GAE
         - actions: (np.ndarray) actions
         - nextvpred: (numpy float) next action logits
         - ep_rets: (float) cumulated current episode reward
@@ -29,16 +44,18 @@ def traj_segment_generator(policy, env, horizon, reward_giver=None, gail=False):
         - ep_true_rets: (float) the real environment reward
     """
     # Check when using GAIL
-    assert not (gail and reward_giver is None), "You must pass a reward giver when using GAIL"
+    assert not (gail and reward_giver is None), \
+        "You must pass a reward giver when using GAIL"
 
     # Initialize state variables
     step = 0
-    action = env.action_space.sample()  # not used, just so we have the datatype
+    # not used, just so we have the datatype
+    action = env.action_space.sample()
     observation = env.reset()
 
     cur_ep_ret = 0  # return in current episode
     current_it_len = 0  # len of current iteration
-    current_ep_len = 0 # len of current episode
+    current_ep_len = 0  # len of current episode
     cur_ep_true_ret = 0
     ep_true_rets = []
     ep_rets = []  # returns of completed episodes in this segment
@@ -57,7 +74,8 @@ def traj_segment_generator(policy, env, horizon, reward_giver=None, gail=False):
     done = False
 
     while True:
-        action, vpred, states, _ = policy.step(observation.reshape(-1, *observation.shape), states, done)
+        action, vpred, states, _ = policy.step(
+            observation.reshape(-1, *observation.shape), states, done)
         # Slight weirdness here because we need value function at time T
         # before returning segment [0, T-1] so we get the correct
         # terminal value
@@ -76,7 +94,8 @@ def traj_segment_generator(policy, env, horizon, reward_giver=None, gail=False):
                     "ep_true_rets": ep_true_rets,
                     "total_timestep": current_it_len
             }
-            _, vpred, _, _ = policy.step(observation.reshape(-1, *observation.shape))
+            _, vpred, _, _ = policy.step(
+                observation.reshape(-1, *observation.shape))
             # Be careful!!! if you change the downstream algorithm to aggregate
             # several of these batches, then be sure to do a deepcopy
             ep_rets = []
@@ -92,8 +111,10 @@ def traj_segment_generator(policy, env, horizon, reward_giver=None, gail=False):
 
         clipped_action = action
         # Clip the actions to avoid out of bound error
-        if isinstance(env.action_space, gym.spaces.Box):
-            clipped_action = np.clip(action, env.action_space.low, env.action_space.high)
+        if isinstance(env.action_space, Box):
+            clipped_action = np.clip(action,
+                                     a_min=env.action_space.low,
+                                     a_max=env.action_space.high)
 
         if gail:
             reward = reward_giver.get_reward(observation, clipped_action[0])
@@ -130,14 +151,20 @@ def traj_segment_generator(policy, env, horizon, reward_giver=None, gail=False):
 
 
 def add_vtarg_and_adv(seg, gamma, lam):
-    """
-    Compute target value using TD(lambda) estimator, and advantage with GAE(lambda)
+    """Compute target value using TD estimator, and advantage with GAE.
 
-    :param seg: (dict) the current segment of the trajectory (see traj_segment_generator return for more information)
-    :param gamma: (float) Discount factor
-    :param lam: (float) GAE factor
+    Parameters
+    ----------
+    seg : dict
+        the current segment of the trajectory (see traj_segment_generator
+        return for more information)
+    gamma : float
+        Discount factor
+    lam : float
+        GAE factor
     """
-    # last element is only used for last vtarg, but we already zeroed it if last new = 1
+    # last element is only used for last vtarg, but we already zeroed it if
+    # last new = 1
     episode_starts = np.append(seg["episode_starts"], False)
     vpred = np.append(seg["vpred"], seg["nextvpred"])
     rew_len = len(seg["rewards"])
@@ -146,16 +173,24 @@ def add_vtarg_and_adv(seg, gamma, lam):
     lastgaelam = 0
     for step in reversed(range(rew_len)):
         nonterminal = 1 - float(episode_starts[step + 1])
-        delta = rewards[step] + gamma * vpred[step + 1] * nonterminal - vpred[step]
-        seg["adv"][step] = lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
+        delta = rewards[step] + gamma * vpred[step + 1] \
+            * nonterminal - vpred[step]
+        seg["adv"][step] = lastgaelam = delta \
+            + gamma * lam * nonterminal * lastgaelam
     seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
 
 def flatten_lists(listoflists):
-    """
-    Flatten a python list of list
+    """Flatten a python list of list.
 
-    :param listoflists: (list(list))
-    :return: (list)
+    Parameters
+    ----------
+    listoflists : list of list
+        the list of flatten
+
+    Returns
+    -------
+    list
+        flattened list
     """
     return [el for list_ in listoflists for el in list_]
