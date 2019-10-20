@@ -7,8 +7,7 @@ from stable_baselines.common.vec_env import VecEnv
 def traj_segment_generator(policy,
                            env,
                            horizon,
-                           reward_giver=None,
-                           gail=False):
+                           reward_giver=None):
     """Compute target value using TD estimator, and advantage with GAE.
 
     Parameters
@@ -21,8 +20,6 @@ def traj_segment_generator(policy,
         the number of timesteps to run per batch
     reward_giver : TransitionClassifier  FIXME
         the reward predictor from observation and action
-    gail : bool
-        Whether we are using this generator for standard trpo or with gail
 
     Returns
     -------
@@ -30,8 +27,8 @@ def traj_segment_generator(policy,
         generator that returns a dict with the following keys:
 
         - observations: (np.ndarray) observations
-        - rewards: (numpy float) rewards (if gail is used it is the predicted
-          reward)
+        - rewards: (numpy float) rewards
+        TODO: remove
         - true_rewards: (numpy float) if gail is used it is the original reward
         - vpred: (numpy float) action logits
         - dones: (numpy bool) dones (is end of episode, used for logging)
@@ -43,10 +40,6 @@ def traj_segment_generator(policy,
         - ep_lens: (int) the length of the current episode
         - ep_true_rets: (float) the real environment reward
     """
-    # Check when using GAIL
-    assert not (gail and reward_giver is None), \
-        "You must pass a reward giver when using GAIL"
-
     # Initialize state variables
     step = 0
     # not used, just so we have the datatype
@@ -116,12 +109,8 @@ def traj_segment_generator(policy,
                                      a_min=env.action_space.low,
                                      a_max=env.action_space.high)
 
-        if gail:
-            reward = reward_giver.get_reward(observation, clipped_action[0])
-            observation, true_reward, done, info = env.step(clipped_action[0])
-        else:
-            observation, reward, done, info = env.step(clipped_action[0])
-            true_reward = reward
+        observation, reward, done, info = env.step(clipped_action[0])
+        true_reward = reward
         rewards[i] = reward
         true_rewards[i] = true_reward
         dones[i] = done
@@ -135,8 +124,7 @@ def traj_segment_generator(policy,
             # Retrieve unnormalized reward if using Monitor wrapper
             maybe_ep_info = info.get('episode')
             if maybe_ep_info is not None:
-                if not gail:
-                    cur_ep_ret = maybe_ep_info['r']
+                cur_ep_ret = maybe_ep_info['r']
                 cur_ep_true_ret = maybe_ep_info['r']
 
             ep_rets.append(cur_ep_ret)
