@@ -154,9 +154,6 @@ class TRPO(ActorCriticRLModel):
         self.nworkers = None
         self.rank = None
         self.reward_giver = None
-        self.step = None
-        self.proba_step = None
-        self.initial_state = None
         self.params = None
         self.summary = None
         self.episode_reward = None
@@ -172,16 +169,13 @@ class TRPO(ActorCriticRLModel):
         return policy.obs_ph, action_ph, policy.deterministic_action
 
     def setup_model(self):
-        assert issubclass(self.policy, ActorCriticPolicy), \
-            "Error: the input policy for the TRPO model must be " \
-            "an instance of common.policies.ActorCriticPolicy."
-
         self.nworkers = MPI.COMM_WORLD.Get_size()
         self.rank = MPI.COMM_WORLD.Get_rank()
         np.set_printoptions(precision=3)
 
         self.graph = tf.Graph()
         with self.graph.as_default():
+            # Create the tensorflow session.
             self.sess = tf_util.single_threaded_session(graph=self.graph)
 
             # Construct network for new policy
@@ -189,8 +183,8 @@ class TRPO(ActorCriticRLModel):
                 self.sess,
                 self.observation_space,
                 self.action_space,
-                self.n_envs,
-                1, None, reuse=False, **self.policy_kwargs)
+                reuse=False,
+                **self.policy_kwargs)
 
             # Network for old policy
             with tf.variable_scope("oldpi", reuse=False):
@@ -198,8 +192,8 @@ class TRPO(ActorCriticRLModel):
                     self.sess,
                     self.observation_space,
                     self.action_space,
-                    self.n_envs,
-                    1, None, reuse=False, **self.policy_kwargs)
+                    reuse=False,
+                    **self.policy_kwargs)
 
             with tf.variable_scope("loss", reuse=False):
                 # Target advantage function (if applicable)
@@ -208,7 +202,9 @@ class TRPO(ActorCriticRLModel):
                 ret = tf.placeholder(dtype=tf.float32, shape=[None])
 
                 observation = self.policy_pi.obs_ph
-                action = self.policy_pi.pdtype.sample_placeholder([None])
+                action = tf.placeholder(
+                    tf.float32,
+                    shape=(None, self.action_space.shape[0]))
 
                 kloldnew = old_policy.proba_distribution.kl(
                     self.policy_pi.proba_distribution)
@@ -331,10 +327,6 @@ class TRPO(ActorCriticRLModel):
 
             self.timed = timed
             self.allmean = allmean
-
-            self.step = self.policy_pi.step
-            self.proba_step = self.policy_pi.proba_step
-            self.initial_state = self.policy_pi.initial_state
 
             self.params = tf_util.get_trainable_vars("model") \
                 + tf_util.get_trainable_vars("oldpi")

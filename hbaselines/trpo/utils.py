@@ -62,13 +62,11 @@ def traj_segment_generator(policy,
     episode_starts = np.zeros(horizon, 'bool')
     dones = np.zeros(horizon, 'bool')
     actions = np.array([action for _ in range(horizon)])
-    states = policy.initial_state
     episode_start = True  # marks if we're on first timestep of an episode
-    done = False
 
     while True:
-        action, vpred, states, _ = policy.step(
-            observation.reshape(-1, *observation.shape), states, done)
+        action, vpred, _ = policy.step(
+            observation.reshape(-1, *observation.shape))
         # Slight weirdness here because we need value function at time T
         # before returning segment [0, T-1] so we get the correct
         # terminal value
@@ -87,7 +85,7 @@ def traj_segment_generator(policy,
                     "ep_true_rets": ep_true_rets,
                     "total_timestep": current_it_len
             }
-            _, vpred, _, _ = policy.step(
+            _, vpred, _ = policy.step(
                 observation.reshape(-1, *observation.shape))
             # Be careful!!! if you change the downstream algorithm to aggregate
             # several of these batches, then be sure to do a deepcopy
