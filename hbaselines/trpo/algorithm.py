@@ -3,20 +3,17 @@ from contextlib import contextmanager
 from collections import deque
 
 from gym.spaces import Discrete
-from mpi4py import MPI
 import tensorflow as tf
 import numpy as np
 
 import stable_baselines.common.tf_util as tf_util
 from stable_baselines.common import explained_variance, zipsame, dataset, \
-    colorize, ActorCriticRLModel, TensorboardWriter
+    colorize, ActorCriticRLModel
 from stable_baselines import logger
 from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.cg import conjugate_gradient
-from stable_baselines.common.policies import ActorCriticPolicy
 from stable_baselines.a2c.utils import total_episode_reward_logger
-from hbaselines.trpo.utils import traj_segment_generator, \
-    add_vtarg_and_adv, flatten_lists
+from hbaselines.trpo.utils import traj_segment_generator, add_vtarg_and_adv
 
 
 class TRPO(ActorCriticRLModel):
@@ -150,9 +147,6 @@ class TRPO(ActorCriticRLModel):
         self.get_flat = None
         self.set_from_flat = None
         self.timed = None
-        self.allmean = None
-        self.nworkers = None
-        self.rank = None
         self.reward_giver = None
         self.params = None
         self.summary = None
@@ -169,8 +163,6 @@ class TRPO(ActorCriticRLModel):
         return policy.obs_ph, action_ph, policy.deterministic_action
 
     def setup_model(self):
-        self.nworkers = MPI.COMM_WORLD.Get_size()
-        self.rank = MPI.COMM_WORLD.Get_rank()
         np.set_printoptions(precision=3)
 
         self.graph = tf.Graph()
@@ -282,7 +274,7 @@ class TRPO(ActorCriticRLModel):
 
                 @contextmanager
                 def timed(msg):
-                    if self.rank == 0 and self.verbose >= 1:
+                    if self.verbose >= 1:
                         print(colorize(msg, color='magenta'))
                         start_time = time.time()
                         yield
@@ -291,17 +283,9 @@ class TRPO(ActorCriticRLModel):
                     else:
                         yield
 
-                def allmean(arr):
-                    assert isinstance(arr, np.ndarray)
-                    out = np.empty_like(arr)
-                    MPI.COMM_WORLD.Allreduce(arr, out, op=MPI.SUM)
-                    out /= self.nworkers
-                    return out
-
                 tf_util.initialize(sess=self.sess)
 
                 th_init = self.get_flat()
-                MPI.COMM_WORLD.Bcast(th_init, root=0)
                 self.set_from_flat(th_init)
 
             with tf.variable_scope("Adam_mpi", reuse=False):
@@ -326,7 +310,6 @@ class TRPO(ActorCriticRLModel):
                         tf.summary.histogram('observation', observation)
 
             self.timed = timed
-            self.allmean = allmean
 
             self.params = tf_util.get_trainable_vars("model") \
                 + tf_util.get_trainable_vars("oldpi")
@@ -341,7 +324,6 @@ class TRPO(ActorCriticRLModel):
 
     def learn(self,
               total_timesteps,
-              callback=None,
               seed=None,
               log_interval=100,
               tb_log_name="TRPO",
@@ -349,227 +331,194 @@ class TRPO(ActorCriticRLModel):
         """FIXME
 
         :param total_timesteps:
-        :param callback:
         :param seed:
         :param log_interval:
         :param tb_log_name:
         :param reset_num_timesteps:
         :return:
         """
+        writer = None
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
 
-        with TensorboardWriter(self.graph, self.tensorboard_log,
-                               tb_log_name, new_tb_log) as writer:
-            self._setup_learn(seed)
+        self._setup_learn(seed)
 
-            with self.sess.as_default():
-                seg_gen = traj_segment_generator(
-                    self.policy_pi,
-                    self.env,
-                    self.timesteps_per_batch,
-                    reward_giver=self.reward_giver)
+        with self.sess.as_default():
+            seg_gen = traj_segment_generator(
+                self.policy_pi,
+                self.env,
+                self.timesteps_per_batch,
+                reward_giver=self.reward_giver)
 
-                episodes_so_far = 0
-                timesteps_so_far = 0
-                iters_so_far = 0
-                t_start = time.time()
-                # rolling buffer for episode lengths
-                len_buffer = deque(maxlen=40)
-                # rolling buffer for episode rewards
-                reward_buffer = deque(maxlen=40)
-                self.episode_reward = np.zeros((self.n_envs,))
+            episodes_so_far = 0
+            timesteps_so_far = 0
+            iters_so_far = 0
+            t_start = time.time()
+            # rolling buffer for episode lengths
+            len_buffer = deque(maxlen=40)
+            # rolling buffer for episode rewards
+            reward_buffer = deque(maxlen=40)
+            self.episode_reward = np.zeros((self.n_envs,))
 
-                while True:
-                    if callback is not None:
-                        # Only stop training if return value is False, not when
-                        # it is None. This is for backwards compatibility with
-                        # callbacks that have no return statement.
-                        if callback(locals(), globals()) is False:
-                            break
-                    if total_timesteps and timesteps_so_far >= total_timesteps:
-                        break
+            while True:
+                if total_timesteps and timesteps_so_far >= total_timesteps:
+                    break
 
-                    logger.log("********** Iteration %i ************" %
-                               iters_so_far)
+                logger.log("********** Iteration %i ************" %
+                           iters_so_far)
 
-                    def fisher_vector_product(vec):
-                        return self.allmean(
-                            self.compute_fvp(vec, *fvpargs, sess=self.sess)) \
-                            + self.cg_damping * vec
+                def fisher_vector_product(vec):
+                    return self.compute_fvp(vec, *fvpargs, sess=self.sess)\
+                        + self.cg_damping * vec
 
-                    # ------------------ Update G ------------------
-                    logger.log("Optimizing Policy...")
-                    mean_losses = None
-                    vpredbefore = None
-                    tdlamret = None
-                    observation = None
-                    action = None
-                    seg = None
-                    with self.timed("sampling"):
-                        seg = seg_gen.__next__()
-                    add_vtarg_and_adv(seg, self.gamma, self.lam)
-                    observation, action = seg["observations"], seg["actions"]
-                    atarg, tdlamret = seg["adv"], seg["tdlamret"]
+                # ------------------ Update G ------------------
+                logger.log("Optimizing Policy...")
+                mean_losses = None
+                with self.timed("sampling"):
+                    seg = seg_gen.__next__()
+                add_vtarg_and_adv(seg, self.gamma, self.lam)
+                atarg, tdlamret = seg["adv"], seg["tdlamret"]
 
-                    # predicted value function before update
-                    vpredbefore = seg["vpred"]
-                    # standardized advantage function estimate
-                    atarg = (atarg - atarg.mean()) / atarg.std()
+                # predicted value function before update
+                vpredbefore = seg["vpred"]
+                # standardized advantage function estimate
+                atarg = (atarg - atarg.mean()) / atarg.std()
 
-                    # true_rew is the reward without discount
+                # true_rew is the reward without discount
+                if writer is not None:
+                    self.episode_reward = total_episode_reward_logger(
+                        self.episode_reward,
+                        seg["true_rewards"].reshape((self.n_envs, -1)),
+                        seg["dones"].reshape((self.n_envs, -1)),
+                        writer,
+                        self.num_timesteps)
+
+                args = (seg["observations"], seg["observations"],
+                        seg["actions"], atarg)
+
+                # Subsampling: see p40-42 of John Schulman thesis
+                # http://joschu.net/docs/thesis.pdf
+                fvpargs = [arr[::5] for arr in args]
+
+                self.assign_old_eq_new(sess=self.sess)
+
+                with self.timed("computegrad"):
+                    steps = self.num_timesteps + seg["total_timestep"]
+                    run_options = tf.RunOptions(
+                        trace_level=tf.RunOptions.FULL_TRACE)
+                    run_metadata = tf.RunMetadata() \
+                        if self.full_tensorboard_log else None
+                    # run loss backprop with summary, and save the metadata
+                    # (memory, compute time, ...)
                     if writer is not None:
-                        self.episode_reward = total_episode_reward_logger(
-                            self.episode_reward,
-                            seg["true_rewards"].reshape((self.n_envs, -1)),
-                            seg["dones"].reshape((self.n_envs, -1)),
-                            writer,
-                            self.num_timesteps)
-
-                    args = (seg["observations"], seg["observations"],
-                            seg["actions"], atarg)
-
-                    # Subsampling: see p40-42 of John Schulman thesis
-                    # http://joschu.net/docs/thesis.pdf
-                    fvpargs = [arr[::5] for arr in args]
-
-                    self.assign_old_eq_new(sess=self.sess)
-
-                    with self.timed("computegrad"):
-                        steps = self.num_timesteps + seg["total_timestep"]
-                        run_options = tf.RunOptions(
-                            trace_level=tf.RunOptions.FULL_TRACE)
-                        run_metadata = tf.RunMetadata() \
-                            if self.full_tensorboard_log else None
-                        # run loss backprop with summary, and save the
-                        # metadata (memory, compute time, ...)
-                        if writer is not None:
-                            summary, grad, *lossbefore = \
-                                self.compute_lossandgrad(
-                                    *args,
-                                    tdlamret,
-                                    sess=self.sess,
-                                    options=run_options,
-                                    run_metadata=run_metadata)
-                            if self.full_tensorboard_log:
-                                writer.add_run_metadata(
-                                    run_metadata, 'step%d' % steps)
-                            writer.add_summary(summary, steps)
-                        else:
-                            _, grad, *lossbefore = \
-                                self.compute_lossandgrad(
-                                    *args,
-                                    tdlamret,
-                                    sess=self.sess,
-                                    options=run_options,
-                                    run_metadata=run_metadata)
-
-                    lossbefore = self.allmean(np.array(lossbefore))
-                    grad = self.allmean(grad)
-                    if np.allclose(grad, 0):
-                        logger.log("Got zero gradient. not updating")
+                        summary, grad, *lossbefore = \
+                            self.compute_lossandgrad(
+                                *args,
+                                tdlamret,
+                                sess=self.sess,
+                                options=run_options,
+                                run_metadata=run_metadata)
+                        if self.full_tensorboard_log:
+                            writer.add_run_metadata(
+                                run_metadata, 'step%d' % steps)
+                        writer.add_summary(summary, steps)
                     else:
-                        with self.timed("conjugate_gradient"):
-                            stepdir = conjugate_gradient(
-                                fisher_vector_product,
-                                grad,
-                                cg_iters=self.cg_iters,
-                                verbose=self.rank == 0
-                                and self.verbose >= 1)
-                        assert np.isfinite(stepdir).all()
-                        shs = .5 * stepdir.dot(
-                            fisher_vector_product(stepdir))
-                        # abs(shs) to avoid taking square root of negative
-                        # values
-                        lagrange_multiplier = np.sqrt(
-                            abs(shs) / self.max_kl)
-                        fullstep = stepdir / lagrange_multiplier
-                        expectedimprove = grad.dot(fullstep)
-                        surrbefore = lossbefore[0]
-                        stepsize = 1.0
-                        thbefore = self.get_flat()
-                        thnew = None
-                        for _ in range(10):
-                            thnew = thbefore + fullstep * stepsize
-                            self.set_from_flat(thnew)
-                            mean_losses = surr, kl_loss, *_ = self.allmean(
-                                np.array(self.compute_losses(
-                                    *args, sess=self.sess)))
-                            improve = surr - surrbefore
-                            logger.log("Expected: %.3f Actual: %.3f" % (
-                                expectedimprove, improve))
-                            if not np.isfinite(mean_losses).all():
-                                logger.log("Got non-finite value of "
-                                           "losses -- bad!")
-                            elif kl_loss > self.max_kl * 1.5:
-                                logger.log("violated KL constraint. "
-                                           "shrinking step.")
-                            elif improve < 0:
-                                logger.log("surrogate didn't improve. "
-                                           "shrinking step.")
-                            else:
-                                logger.log("Stepsize OK!")
-                                break
-                            stepsize *= .5
+                        _, grad, *lossbefore = \
+                            self.compute_lossandgrad(
+                                *args,
+                                tdlamret,
+                                sess=self.sess,
+                                options=run_options,
+                                run_metadata=run_metadata)
+
+                lossbefore = np.array(lossbefore)
+                if np.allclose(grad, 0):
+                    logger.log("Got zero gradient. not updating")
+                else:
+                    with self.timed("conjugate_gradient"):
+                        stepdir = conjugate_gradient(
+                            fisher_vector_product,
+                            grad,
+                            cg_iters=self.cg_iters,
+                            verbose=self.verbose >= 1)
+                    assert np.isfinite(stepdir).all()
+                    shs = .5 * stepdir.dot(
+                        fisher_vector_product(stepdir))
+                    # abs(shs) to avoid taking square root of negative
+                    # values
+                    lagrange_multiplier = np.sqrt(
+                        abs(shs) / self.max_kl)
+                    fullstep = stepdir / lagrange_multiplier
+                    expectedimprove = grad.dot(fullstep)
+                    surrbefore = lossbefore[0]
+                    stepsize = 1.0
+                    thbefore = self.get_flat()
+                    thnew = None
+                    for _ in range(10):
+                        thnew = thbefore + fullstep * stepsize
+                        self.set_from_flat(thnew)
+                        mean_losses = surr, kl_loss, *_ = np.array(
+                            self.compute_losses(*args, sess=self.sess))
+                        improve = surr - surrbefore
+                        logger.log("Expected: %.3f Actual: %.3f" % (
+                            expectedimprove, improve))
+                        if not np.isfinite(mean_losses).all():
+                            logger.log(
+                                "Got non-finite value of losses -- bad!")
+                        elif kl_loss > self.max_kl * 1.5:
+                            logger.log(
+                                "violated KL constraint. shrinking step.")
+                        elif improve < 0:
+                            logger.log(
+                                "surrogate didn't improve. shrinking step.")
                         else:
-                            logger.log("couldn't compute a good step")
-                            self.set_from_flat(thbefore)
-                        if self.nworkers > 1 and iters_so_far % 20 == 0:
-                            # list of tuples
-                            paramsums = MPI.COMM_WORLD.allgather(
-                                (thnew.sum(), self.vfadam.getflat().sum()))
-                            assert all(np.allclose(ps, paramsums[0])
-                                       for ps in paramsums[1:])
+                            logger.log("Stepsize OK!")
+                            break
+                        stepsize *= .5
+                    else:
+                        logger.log("couldn't compute a good step")
+                        self.set_from_flat(thbefore)
 
-                    with self.timed("vf"):
-                        for _ in range(self.vf_iters):
-                            # NOTE: for recurrent policies, use
-                            # shuffle=False?
-                            for (mbob, mbret) in dataset.iterbatches(
-                                    (seg["observations"], seg["tdlamret"]),
-                                    include_final_partial_batch=False,
-                                    batch_size=128,
-                                    shuffle=True):
-                                grad = self.allmean(
-                                    self.compute_vflossandgrad(
-                                        mbob, mbob, mbret, sess=self.sess))
-                                self.vfadam.update(grad, self.vf_stepsize)
+                with self.timed("vf"):
+                    for _ in range(self.vf_iters):
+                        # NOTE: for recurrent policies, use shuffle=False?
+                        for (mbob, mbret) in dataset.iterbatches(
+                                (seg["observations"], seg["tdlamret"]),
+                                include_final_partial_batch=False,
+                                batch_size=128,
+                                shuffle=True):
+                            grad = self.compute_vflossandgrad(
+                                mbob, mbob, mbret, sess=self.sess)
+                            self.vfadam.update(grad, self.vf_stepsize)
 
-                    for (loss_name, loss_val) in zip(self.loss_names,
-                                                     mean_losses):
-                        logger.record_tabular(loss_name, loss_val)
+                for (loss_name, loss_val) in zip(self.loss_names, mean_losses):
+                    logger.record_tabular(loss_name, loss_val)
 
-                    logger.record_tabular(
-                        "explained_variance_tdlam_before",
-                        explained_variance(vpredbefore, tdlamret))
+                logger.record_tabular(
+                    "explained_variance_tdlam_before",
+                    explained_variance(vpredbefore, tdlamret))
 
-                    # lr: lengths and rewards
-                    lr_local = (seg["ep_lens"], seg["ep_rets"])
-                    # list of tuples
-                    list_lr_pairs = MPI.COMM_WORLD.allgather(lr_local)
-                    lens, rews = map(flatten_lists, zip(*list_lr_pairs))
+                # lr: lengths and rewards
+                lens, rews = seg["ep_lens"], seg["ep_rets"]
 
-                    len_buffer.extend(lens)
-                    reward_buffer.extend(rews)
+                len_buffer.extend(lens)
+                reward_buffer.extend(rews)
 
-                    if len(len_buffer) > 0:
-                        logger.record_tabular("EpLenMean",
-                                              np.mean(len_buffer))
-                        logger.record_tabular("EpRewMean",
-                                              np.mean(reward_buffer))
-                    logger.record_tabular("EpThisIter", len(lens))
-                    episodes_so_far += len(lens)
-                    current_it_timesteps = MPI.COMM_WORLD.allreduce(
-                        seg["total_timestep"])
-                    timesteps_so_far += current_it_timesteps
-                    self.num_timesteps += current_it_timesteps
-                    iters_so_far += 1
+                if len(len_buffer) > 0:
+                    logger.record_tabular("EpLenMean", np.mean(len_buffer))
+                    logger.record_tabular("EpRewMean", np.mean(reward_buffer))
+                logger.record_tabular("EpThisIter", len(lens))
+                episodes_so_far += len(lens)
+                current_it_timesteps = seg["total_timestep"]
+                timesteps_so_far += current_it_timesteps
+                self.num_timesteps += current_it_timesteps
+                iters_so_far += 1
 
-                    logger.record_tabular("EpisodesSoFar", episodes_so_far)
-                    logger.record_tabular("TimestepsSoFar", self.num_timesteps)
-                    logger.record_tabular("TimeElapsed", time.time() - t_start)
+                logger.record_tabular("EpisodesSoFar", episodes_so_far)
+                logger.record_tabular("TimestepsSoFar", self.num_timesteps)
+                logger.record_tabular("TimeElapsed", time.time() - t_start)
 
-                    if self.verbose >= 1 and self.rank == 0:
-                        logger.dump_tabular()
+                if self.verbose >= 1:
+                    logger.dump_tabular()
 
         return self
 
