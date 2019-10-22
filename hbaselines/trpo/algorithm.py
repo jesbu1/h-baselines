@@ -16,7 +16,6 @@ from stable_baselines.common import explained_variance, zipsame, dataset, \
     colorize
 from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.cg import conjugate_gradient
-from stable_baselines.a2c.utils import total_episode_reward_logger
 from hbaselines.trpo.utils import add_vtarg_and_adv
 from hbaselines.common.utils import ensure_dir
 
@@ -607,7 +606,7 @@ class TRPO(object):
         """
         def fisher_vector_product(vec):  # TODO: move somewhere else
             return self.compute_fvp(vec, *fvpargs, sess=self.sess) \
-                   + self.cg_damping * vec
+                + self.cg_damping * vec
 
         # ------------------ Update G ------------------
         print("Optimizing Policy...")
@@ -619,15 +618,6 @@ class TRPO(object):
         vpredbefore = seg["vpred"]
         # standardized advantage function estimate
         atarg = (atarg - atarg.mean()) / atarg.std()
-
-        # true_rew is the reward without discount  TODO: remove
-        if writer is not None:
-            self.episode_reward = total_episode_reward_logger(
-                self.episode_reward,
-                seg["true_rewards"].reshape((1, -1)),
-                seg["dones"].reshape((1, -1)),
-                writer,
-                self.num_timesteps)
 
         args = (seg["observations"], seg["observations"],
                 seg["actions"], atarg)
