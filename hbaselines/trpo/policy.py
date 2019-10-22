@@ -78,7 +78,7 @@ class FeedForwardPolicy(object):
         # Create the observation placeholder
         with tf.variable_scope("input", reuse=False):
             self.obs_ph = tf.compat.v1.placeholder(
-                tf.float32, shape=(None,) + ob_space.shape)
+                tf.float32, shape=(None,) + ob_space.shape, name="obs_ph")
 
         with tf.variable_scope("model", reuse=reuse):
             pi_latent, vf_latent = self.mlp_extractor(
