@@ -15,8 +15,6 @@ except (ImportError, ModuleNotFoundError):
 class RLAlgorithm(object):
     """Base RL algorithm object.
 
-    See: https://arxiv.org/abs/1502.05477
-
     Attributes
     ----------
     policy : TODO
@@ -31,8 +29,9 @@ class RLAlgorithm(object):
         the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     policy_kwargs : dict
         additional arguments to be passed to the policy on creation
-    timed : TODO
-        TODO
+    timed : function
+        a utility method that is used to compute the time a specific process
+        takes to finish.
     """
 
     def __init__(self,

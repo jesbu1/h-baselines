@@ -1,7 +1,6 @@
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import numpy as np
-from stable_baselines.common.policies import ActorCriticPolicy
 
 
 class FeedForwardPolicy(object):
@@ -22,6 +21,12 @@ class FeedForwardPolicy(object):
         [64, 64])
     act_fun : tf.nn.*
         the activation function to use in the neural network.
+    shared : bool
+        specifies whether to shared the hidden layers between the actor and
+        critic
+    duel_vf : bool
+        specifies whether to create two value functions. If not, only one is
+        created.
     obs_ph : tf.compat.v1.placeholder
         observation placeholder
     value_fn : tf.Tensor
@@ -30,8 +35,6 @@ class FeedForwardPolicy(object):
         value estimate, of shape (self.n_batch, )
     proba_distribution : ProbabilityDistribution
         distribution of stochastic actions.
-    q_value : tf.Tensor
-        TODO
     action : tf.Tensor
         stochastic action, of shape (self.n_batch, ) + self.ac_space.shape.
     deterministic_action : tf.Tensor
@@ -48,7 +51,9 @@ class FeedForwardPolicy(object):
                  ac_space,
                  reuse=False,
                  layers=None,
-                 act_fun=tf.tanh):
+                 act_fun=tf.tanh,
+                 shared=True,
+                 duel_vf=False):
         """Instantiate the policy.
 
         Parameters
@@ -66,6 +71,12 @@ class FeedForwardPolicy(object):
             [64, 64])
         act_fun : tf.nn.*
             the activation function to use in the neural network.
+        shared : bool
+            specifies whether to shared the hidden layers between the actor and
+            critic
+        duel_vf : bool
+            specifies whether to create two value functions. If not, only one
+            is created.
         """
         self.sess = sess
         self.ob_space = ob_space
@@ -73,7 +84,8 @@ class FeedForwardPolicy(object):
         self.reuse = reuse
         self.layers = layers or [64, 64]
         self.act_fun = act_fun
-        print(ac_space, ob_space)
+        self.shared = shared
+        self.duel_vf = duel_vf
 
         # Create the observation placeholder
         with tf.variable_scope("input", reuse=False):
@@ -81,53 +93,35 @@ class FeedForwardPolicy(object):
                 tf.float32, shape=(None,) + ob_space.shape, name="obs_ph")
 
         with tf.variable_scope("model", reuse=reuse):
-            pi_latent, vf_latent = self.mlp_extractor(
-                tf.layers.flatten(self.obs_ph), self.layers, self.act_fun)
+            # Flatten the observations before passing to the policy.
+            flat_obs = tf.layers.flatten(self.obs_ph)
 
-            # add an extra layer to the shared layers to produce the output
-            # from the value function
-            self.value_fn = tf.compat.v1.layers.dense(
-                vf_latent,
-                1,
-                name='vf',
-                kernel_initializer=slim.variance_scaling_initializer(
-                    factor=1.0 / 3.0, mode='FAN_IN', uniform=True),
-            )
-            self.value_flat = self.value_fn[:, 0]
+            # Create the actor mean and logstd, and the value function(s).
+            if shared:
+                mean, logstd, value_fn = self._shared_mlp(
+                    flat_obs, self.layers, self.act_fun)
+            else:
+                mean, logstd, value_fn = self._non_shared_mlp(
+                    flat_obs, self.layers, self.act_fun, duel_vf)
 
-            # Compute the mean value of the action probability.
-            self._mean = tf.compat.v1.layers.dense(
-                pi_latent,
-                self.ac_space.shape[0],
-                name='pi',
-                kernel_initializer=slim.variance_scaling_initializer(
-                    factor=1.0 / 3.0, mode='FAN_IN', uniform=True),
-            )
-
-            # The logstd is a single trainable variable.
-            self._logstd = tf.get_variable(
-                name='pi/logstd', shape=(1, self.ac_space.shape[0]),
-                initializer=tf.zeros_initializer()
-            )
+            self._mean = mean
+            self._logstd = logstd
             self._std = tf.exp(self._logstd)
+            self.value_fn = value_fn
+            if duel_vf:
+                vf1, vf2 = self.value_fn
+                self.value_flat = (vf1[:, 0], vf2[:, 0])
+            else:
+                self.value_flat = self.value_fn[:, 0]
 
-            # TODO: remove
+            # Create a probability distribution from the
             self.proba_distribution = DiagGaussianProbabilityDistribution(
                 self._mean, self._logstd
             )
 
-            # Q-function associated with a given action.
-            self.q_value = tf.compat.v1.layers.dense(
-                vf_latent,
-                self.ac_space.shape[0],
-                name='q',
-                kernel_initializer=slim.variance_scaling_initializer(
-                    factor=1.0 / 3.0, mode='FAN_IN', uniform=True),
-            )
-
         # Compute an action from the probability distribution.
-        self.action = self._mean + self._std \
-            * tf.random_normal(tf.shape(self._mean), dtype=self._mean.dtype)
+        self.action = self._mean + self._std * tf.random_normal(
+            tf.shape(self._mean), dtype=self._mean.dtype)
 
         # Set up the distributions, actions, and value.
         self.deterministic_action = self._mean
@@ -190,15 +184,19 @@ class FeedForwardPolicy(object):
         """
         return self.sess.run(self.value_flat, {self.obs_ph: obs})
 
-    @staticmethod
-    def mlp_extractor(flat_observations, layers, act_fun):
-        """Create the shared layers of the policy.
+    def _shared_mlp(self, flat_obs, layers, act_fun):
+        """Create a shared representation of the policy.
 
-        These layers are used by both the actor and value function.
+        The hidden layers are shared by both the actor and value function,
+        following by separate linear layers to compute the outputs of each. For
+        the actor, this output acts as the mean; the logstd is computed by a
+        single trainable variable.
+
+        **Note**: Duel value functions does not work in this setting.
 
         Parameters
         ----------
-        flat_observations : tf.Tensor
+        flat_obs : tf.Tensor
             The observations to base policy and value function on.
         layers : list of int
             The number of units per layer.
@@ -208,11 +206,13 @@ class FeedForwardPolicy(object):
         Returns
         -------
         tf.Tensor
-            latent_policy of the specified network
+            mean value from the policy's actor
         tf.Tensor
-            latent_value of the specified network
+            logstd value from the policy's actor
+        tf.Tensor
+            output from the policy's critic / value function
         """
-        latent = flat_observations
+        latent = flat_obs
 
         # Iterate through the shared layers and build the shared parts of the
         # network
@@ -222,16 +222,141 @@ class FeedForwardPolicy(object):
                 latent,
                 layer_size,
                 activation=act_fun,
-                name="shared_fc{}".format(idx),
+                name="shared_{}".format(idx),
                 kernel_initializer=slim.variance_scaling_initializer(
                     factor=1.0 / 3.0, mode='FAN_IN', uniform=True),
             )
 
-        # Build the non-shared part of the network
-        latent_policy = latent
-        latent_value = latent
+        return self._gen_output_layers(latent, latent)
 
-        return latent_policy, latent_value
+    def _non_shared_mlp(self, flat_obs, layers, act_fun, duel_vf):
+        """Create a non-shared representation of the policy.
+
+        In this case, the actor and critic policies do not share any hidden
+        layers.
+
+        Parameters
+        ----------
+        flat_obs : tf.Tensor
+            The observations to base policy and value function on.
+        layers : list of int
+            The number of units per layer.
+        act_fun : tf.nn.*
+            The activation function to use for the networks.
+        duel_vf : bool
+            specifies whether to create two value functions. If not, only one
+            is created.
+
+        Returns
+        -------
+        tf.Tensor
+            mean value from the policy's actor
+        tf.Tensor
+            logstd value from the policy's actor
+        tf.Tensor or (tf.Tensor, tf.Tensor)
+            output from the policy's critic / value function. Tuple if duel_vf
+            is set to True
+        """
+        vf_latent = (flat_obs, flat_obs) if duel_vf else flat_obs
+        pi_latent = flat_obs
+
+        # Iterate through and build separate hidden layers for the actor and
+        # the critic.
+        for idx, layer in enumerate(layers):
+            if duel_vf:
+                vf1, vf2 = vf_latent
+                vf1 = self._layer(vf1, layer, "vf1_{}".format(idx), act_fun)
+                vf2 = self._layer(vf2, layer, "vf2_{}".format(idx), act_fun)
+                vf_latent = (vf1, vf2)
+            else:
+                vf_latent = self._layer(
+                    vf_latent, layer, "vf_{}".format(idx), act_fun)
+
+            pi_latent = self._layer(
+                pi_latent, layer, "pi_{}".format(idx), act_fun)
+
+        return self._gen_output_layers(pi_latent, vf_latent)
+
+    def _gen_output_layers(self, pi_latent, vf_latent):
+        """Create the necessary output layers.
+
+        Parameters
+        ----------
+        pi_latent : tf.Tensor
+            the output from the hidden layers of the policy
+        vf_latent : tf.Tensor or (tf.Tensor, tf.Tensor)
+            the output from the hidden layers of the value function(s). If a
+            tuple of tensors of tensors are provided, then this implies that
+            duel value functions are being created.
+
+        Returns
+        -------
+        tf.Tensor
+            mean value from the policy's actor
+        tf.Tensor
+            logstd value from the policy's actor
+        tf.Tensor or (tf.Tensor, tf.Tensor)
+            output from the policy's critic / value function
+        """
+        if isinstance(vf_latent, tuple):
+            # Separate the tuple of vf latents and use these as the inputs to
+            # final layer for each of the two value functions.
+            vf1_latent, vf2_latent = vf_latent
+            vf1 = self._layer(vf1_latent, 1, 'vf1_out', None)
+            vf2 = self._layer(vf2_latent, 1, 'vf2_out', None)
+
+            # The output value function is a tuple of both value functions.
+            value_fn = (vf1, vf2)
+        else:
+            # Add an extra layer to produce the output from the value function.
+            value_fn = self._layer(vf_latent, 1, 'vf_out', None)
+
+        # Add an extra layer after the shared layers to produce the mean action
+        # by the actor.
+        mean = self._layer(pi_latent, self.ac_space.shape[0], 'pi_mean', None)
+
+        # The logstd is a single trainable variable.
+        logstd = tf.get_variable(
+            name='pi_logstd',
+            shape=(1, self.ac_space.shape[0]),
+            initializer=tf.zeros_initializer()
+        )
+
+        return mean, logstd, value_fn
+
+    @staticmethod
+    def _layer(in_val, num_output, name, act_fun):
+        """Create a fully connected layer.
+
+        This is here to reduce code duplication.
+
+        Parameters
+        ----------
+        in_val : tf.Tensor
+            input tensor
+        num_output : int
+            number of outputs from the layer
+        name : str
+            the name of the layer
+        act_fun : tf.nn.* or None
+            activation function. None refers to a linear combination
+
+        Returns
+        -------
+        tf.Tensor
+            the output from the new layer
+        """
+        return tf.compat.v1.layers.dense(
+            in_val,
+            num_output,
+            activation=act_fun,
+            name=name,
+            kernel_initializer=slim.variance_scaling_initializer(
+                factor=1.0 / 3.0,
+                mode='FAN_IN',
+                uniform=True
+            )
+        )
 
 
 class DiagGaussianProbabilityDistribution(object):
