@@ -5,7 +5,7 @@ import os
 import csv
 
 import gym
-from gym.spaces import Discrete, Box
+from gym.spaces import Discrete
 import tensorflow as tf
 import numpy as np
 import random
@@ -67,8 +67,6 @@ class TRPO(RLAlgorithm):
         TODO
     compute_vflossandgrad : TODO
         TODO
-    d_adam : TODO
-        TODO
     vfadam : TODO
         TODO
     get_flat : TODO
@@ -116,8 +114,8 @@ class TRPO(RLAlgorithm):
 
         Parameters
         ----------
-        policy : (ActorCriticPolicy or str)
-            The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+        policy : TODO
+            The policy model to use
         env : gym.Env or str
             The environment to learn from (if registered in Gym, can be str)
         gamma : float
@@ -167,7 +165,6 @@ class TRPO(RLAlgorithm):
         self.compute_lossandgrad = None
         self.compute_fvp = None
         self.compute_vflossandgrad = None
-        self.d_adam = None
         self.vfadam = None
         self.get_flat = None
         self.set_from_flat = None
@@ -192,13 +189,6 @@ class TRPO(RLAlgorithm):
 
         if _init_setup_model:
             self.setup_model()
-
-    def _get_pretrain_placeholders(self):
-        policy = self.policy_pi
-        action_ph = policy.pdtype.sample_placeholder([None])
-        if isinstance(self.action_space, Discrete):
-            return policy.obs_ph, action_ph, policy.policy
-        return policy.obs_ph, action_ph, policy.deterministic_action
 
     def setup_model(self):
         self.graph = tf.Graph()
@@ -293,11 +283,11 @@ class TRPO(RLAlgorithm):
                 tf.summary.scalar('loss', optimgain + meankl + entbonus
                                   + surrgain + meanent)
 
-                self.assign_old_eq_new = \
-                    tf_util.function([], [], updates=[
-                        tf.assign(oldv, newv) for (oldv, newv) in
-                        zipsame(tf_util.get_globals_vars("oldpi"),
-                                tf_util.get_globals_vars("model"))])
+                self.assign_old_eq_new = tf_util.function(
+                    [], [],
+                    updates=[tf.assign(oldv, newv) for (oldv, newv) in
+                             zipsame(tf_util.get_globals_vars("oldpi"),
+                                     tf_util.get_globals_vars("model"))])
                 self.compute_losses = tf_util.function(
                     [observation, old_policy.obs_ph, action, atarg],
                     losses)
@@ -337,13 +327,7 @@ class TRPO(RLAlgorithm):
                     + losses)
 
     def learn(self, total_timesteps, log_dir, seed=None):
-        """FIXME
-
-        :param total_timesteps:
-        :param log_dir:
-        :param seed:
-        :return:
-        """
+        """See parent class."""
         # Make sure that the log directory exists, and if not, make it.
         ensure_dir(log_dir)
         ensure_dir(os.path.join(log_dir, "checkpoints"))
@@ -368,10 +352,11 @@ class TRPO(RLAlgorithm):
         t_start = time.time()
 
         with self.sess.as_default():
-            seg_gen = self._collect_samples()
+            seg_gen = self._collect_samples(self.policy_pi,
+                                            self.timesteps_per_batch)
 
             while self.timesteps_so_far < total_timesteps:
-                print("********** Iteration %i ************" %
+                print("\n********** Iteration %i ************" %
                       self.iters_so_far)
 
                 # Collect samples.
@@ -382,127 +367,10 @@ class TRPO(RLAlgorithm):
                 mean_losses, vpredbefore, tdlamret = self._train(seg, writer)
 
                 # Log the training statistics.
-                self._log_training(train_filepath, mean_losses, vpredbefore,
-                                   tdlamret, seg, t_start)
+                self._log_training(t_start, train_filepath, seg, mean_losses,
+                                   vpredbefore, tdlamret)
 
         return self
-
-    def _collect_samples(self):
-        """Compute target value using TD estimator, and advantage with GAE.
-
-        Returns
-        -------
-        dict
-            generator that returns a dict with the following keys:
-
-            * observations: (np.ndarray) observations
-            * rewards: (numpy float) rewards
-            TODO: remove
-            * true_rewards: (numpy float) if gail is used it is the original
-              reward
-            * vpred: (numpy float) action logits
-            * dones: (numpy bool) dones (is end of episode, used for logging)
-            * episode_starts: (numpy bool) True if first timestep of an
-              episode, used for GAE
-            * actions: (np.ndarray) actions
-            * nextvpred: (numpy float) next action logits
-            * ep_rets: (float) cumulated current episode reward
-            * ep_lens: (int) the length of the current episode
-            * ep_true_rets: (float) the real environment reward
-        """
-        # Initialize state variables
-        step = 0
-        # not used, just so we have the datatype
-        action = self.env.action_space.sample()
-        observation = self.env.reset()
-
-        cur_ep_ret = 0  # return in current episode
-        current_it_len = 0  # len of current iteration
-        current_ep_len = 0  # len of current episode
-        cur_ep_true_ret = 0
-        ep_true_rets = []
-        ep_rets = []  # returns of completed episodes in this segment
-        ep_lens = []  # Episode lengths
-
-        # Initialize history arrays
-        observations = np.array([observation
-                                 for _ in range(self.timesteps_per_batch)])
-        true_rewards = np.zeros(self.timesteps_per_batch, 'float32')
-        rewards = np.zeros(self.timesteps_per_batch, 'float32')
-        vpreds = np.zeros(self.timesteps_per_batch, 'float32')
-        episode_starts = np.zeros(self.timesteps_per_batch, 'bool')
-        dones = np.zeros(self.timesteps_per_batch, 'bool')
-        actions = np.array([action for _ in range(self.timesteps_per_batch)])
-        episode_start = True  # marks if we're on first timestep of an episode
-
-        while True:
-            action, vpred, _ = self.policy_pi.step(np.array([observation]))
-            # Slight weirdness here because we need value function at time T
-            # before returning segment [0, T-1] so we get the correct
-            # terminal value
-            if step > 0 and step % self.timesteps_per_batch == 0:
-                yield {
-                    "observations": observations,
-                    "rewards": rewards,
-                    "dones": dones,
-                    "episode_starts": episode_starts,
-                    "true_rewards": true_rewards,
-                    "vpred": vpreds,
-                    "actions": actions,
-                    "nextvpred": vpred[0] * (1 - episode_start),
-                    "ep_rets": ep_rets,
-                    "ep_lens": ep_lens,
-                    "ep_true_rets": ep_true_rets,
-                    "total_timestep": current_it_len
-                }
-                _, vpred, _ = self.policy_pi.step(np.array([observation]))
-                # Be careful!!! if you change the downstream algorithm to
-                # aggregate several of these batches, then be sure to do a
-                # deepcopy
-                ep_rets = []
-                ep_true_rets = []
-                ep_lens = []
-                # Reset current iteration length
-                current_it_len = 0
-            i = step % self.timesteps_per_batch
-            observations[i] = observation
-            vpreds[i] = vpred[0]
-            actions[i] = action[0]
-            episode_starts[i] = episode_start
-
-            clipped_action = action
-            # Clip the actions to avoid out of bound error.
-            if isinstance(self.env.action_space, Box):
-                clipped_action = np.clip(action,
-                                         a_min=self.env.action_space.low,
-                                         a_max=self.env.action_space.high)
-
-            observation, reward, done, info = self.env.step(clipped_action[0])
-            true_reward = reward
-            rewards[i] = reward
-            true_rewards[i] = true_reward
-            dones[i] = done
-            episode_start = done
-
-            cur_ep_ret += reward
-            cur_ep_true_ret += true_reward
-            current_it_len += 1
-            current_ep_len += 1
-            if done:
-                # Retrieve unnormalized reward if using Monitor wrapper
-                maybe_ep_info = info.get('episode')
-                if maybe_ep_info is not None:
-                    cur_ep_ret = maybe_ep_info['r']
-                    cur_ep_true_ret = maybe_ep_info['r']
-
-                ep_rets.append(cur_ep_ret)
-                ep_true_rets.append(cur_ep_true_ret)
-                ep_lens.append(current_ep_len)
-                cur_ep_ret = 0
-                cur_ep_true_ret = 0
-                current_ep_len = 0
-                observation = self.env.reset()
-            step += 1
 
     def _train(self, seg, writer):
         """
@@ -612,20 +480,20 @@ class TRPO(RLAlgorithm):
         return mean_losses, vpredbefore, tdlamret
 
     def _log_training(self,
+                      t_start,
                       file_path,
+                      seg,
                       mean_losses,
                       vpredbefore,
-                      tdlamret,
-                      seg,
-                      t_start):
+                      tdlamret):
         """TODO
 
+        :param t_start:
         :param file_path:
+        :param seg:
         :param mean_losses:
         :param vpredbefore:
         :param tdlamret:
-        :param seg:
-        :param t_start:
         :return:
         """
         lens, rews = seg["ep_lens"], seg["ep_rets"]
