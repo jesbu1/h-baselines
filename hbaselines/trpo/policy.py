@@ -128,7 +128,7 @@ class FeedForwardPolicy(object):
         self.neglogp = self.proba_distribution.neglogp(self.action)
         self.policy_proba = [self._mean, self._std]
 
-    def step(self, obs, deterministic=False):
+    def compute_action(self, obs, deterministic=False):
         """Return the policy for a single step.
 
         Parameters
@@ -144,15 +144,13 @@ class FeedForwardPolicy(object):
             actions, values, neglogp
         """
         if deterministic:
-            action, value, neglogp = self.sess.run(
-                [self.deterministic_action, self.value_flat, self.neglogp],
-                feed_dict={self.obs_ph: obs})
+            action = self.sess.run(self.deterministic_action,
+                                   feed_dict={self.obs_ph: obs})
         else:
-            action, value, neglogp = self.sess.run(
-                [self.action, self.value_flat, self.neglogp],
-                feed_dict={self.obs_ph: obs})
+            action = self.sess.run(self.action,
+                                   feed_dict={self.obs_ph: obs})
 
-        return action, value, neglogp
+        return action
 
     def proba_step(self, obs):
         """Return the action probability for a single step.

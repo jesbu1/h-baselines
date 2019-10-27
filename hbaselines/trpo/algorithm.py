@@ -211,9 +211,6 @@ class RLAlgorithm(object):
         t_start = time.time()
 
         with self.sess.as_default():
-            seg_gen = self._collect_samples(self.policy_pi,
-                                            self.timesteps_per_batch)
-
             iters_so_far = 0
             timesteps_so_far = 0
             while timesteps_so_far < total_timesteps:
@@ -221,7 +218,7 @@ class RLAlgorithm(object):
 
                 # Collect samples.
                 with self.timed("Sampling"):
-                    seg = seg_gen.__next__()
+                    seg = self._collect_samples(self.timesteps_per_batch)
                     self._add_vtarg_and_adv(seg, self.gamma, self.lam)
 
                 # Perform the training procedure.
@@ -238,13 +235,11 @@ class RLAlgorithm(object):
 
         return self
 
-    def _collect_samples(self, policy, n_samples):
+    def _collect_samples(self, n_samples):
         """Compute target value using TD estimator, and advantage with GAE.
 
         Parameters
         ----------
-        policy : TODO
-            the policy to use when collecting samples
         n_samples : int
             number of samples to collect before returning from the method
 
@@ -254,115 +249,73 @@ class RLAlgorithm(object):
             generator that returns a dict with the following keys:
 
             * observations: (np.ndarray) observations
+            * next_observations: (np.ndarray) next observations
             * rewards: (numpy float) rewards
-            TODO: remove
-            * true_rewards: (numpy float) if gail is used it is the original
-              reward
-            * vpred: (numpy float) action logits
             * dones: (numpy bool) dones (is end of episode, used for logging)
-            * episode_starts: (numpy bool) True if first timestep of an
-              episode, used for GAE
             * actions: (np.ndarray) actions
-            * nextvpred: (numpy float) next action logits
             * ep_rets: (float) cumulated current episode reward
             * ep_lens: (int) the length of the current episode
-            * ep_true_rets: (float) the real environment reward
+            * total_timestep: (int) total number of stored steps
         """
-        # Initialize state variables
-        step = 0
-        # not used, just so we have the datatype
-        action = self.env.action_space.sample()
-        observation = self.env.reset()
-
+        # Initialize history arrays
+        observations = []
+        next_observations = []
+        rewards = []
+        dones = []
+        actions = []
         cur_ep_ret = 0  # return in current episode
-        current_it_len = 0  # len of current iteration
         current_ep_len = 0  # len of current episode
-        cur_ep_true_ret = 0
-        ep_true_rets = []
         ep_rets = []  # returns of completed episodes in this segment
         ep_lens = []  # Episode lengths
 
-        # Initialize history arrays
-        observations = np.array([observation for _ in range(n_samples)])
-        true_rewards = np.zeros(n_samples, 'float32')
-        rewards = np.zeros(n_samples, 'float32')
-        vpreds = np.zeros(n_samples, 'float32')
-        episode_starts = np.zeros(n_samples, 'bool')
-        dones = np.zeros(n_samples, 'bool')
-        actions = np.array([action for _ in range(n_samples)])
-        episode_start = True  # marks if we're on first timestep of an episode
+        # Initialize state variables
+        obs = self.env.reset()
 
-        while True:
-            action, vpred, _ = policy.step(np.array([observation]))
-            # Slight weirdness here because we need value function at time T
-            # before returning segment [0, T-1] so we get the correct
-            # terminal value
-            if step > 0 and step % n_samples == 0:
-                yield {
-                    "observations": observations,
-                    "rewards": rewards,
-                    "dones": dones,
-                    "episode_starts": episode_starts,
-                    "true_rewards": true_rewards,
-                    "vpred": vpreds,
-                    "actions": actions,
-                    "nextvpred": vpred[0] * (1 - episode_start),
-                    "ep_rets": ep_rets,
-                    "ep_lens": ep_lens,
-                    "ep_true_rets": ep_true_rets,
-                    "total_timestep": current_it_len,
-                }
-                _, vpred, _ = policy.step(np.array([observation]))
-                # Be careful!!! if you change the downstream algorithm to
-                # aggregate several of these batches, then be sure to do a
-                # deepcopy
-                ep_rets = []
-                ep_true_rets = []
-                ep_lens = []
-                # Reset current iteration length
-                current_it_len = 0
-            i = step % n_samples
-            observations[i] = observation
-            vpreds[i] = vpred[0]
-            actions[i] = action[0]
-            episode_starts[i] = episode_start
+        while len(observations) < n_samples:
+            # Compute the next action and the estimated value of the action.
+            action = self.policy_pi.compute_action(np.array([obs]))
 
-            clipped_action = action
             # Clip the actions to avoid out of bound error.
+            clipped_action = action
             if isinstance(self.env.action_space, Box):
                 clipped_action = np.clip(action,
                                          a_min=self.env.action_space.low,
                                          a_max=self.env.action_space.high)
 
-            observation, reward, done, info = self.env.step(clipped_action[0])
-            true_reward = reward
-            rewards[i] = reward
-            true_rewards[i] = true_reward
-            dones[i] = done
-            episode_start = done
+            # Advance the simulation by one step.
+            next_obs, reward, done, info = self.env.step(clipped_action[0])
 
+            # Add sample information.
+            observations.append(obs)
+            next_observations.append(next_obs)
+            actions.append(action[0])
+            rewards.append(reward)
+            dones.append(done)
+
+            # Update relevant variables.
+            obs = next_obs
             cur_ep_ret += reward
-            cur_ep_true_ret += true_reward
-            current_it_len += 1
             current_ep_len += 1
-            if done:
-                # Retrieve unnormalized reward if using Monitor wrapper
-                maybe_ep_info = info.get('episode')
-                if maybe_ep_info is not None:
-                    cur_ep_ret = maybe_ep_info['r']
-                    cur_ep_true_ret = maybe_ep_info['r']
 
+            if done:
                 ep_rets.append(cur_ep_ret)
-                ep_true_rets.append(cur_ep_true_ret)
                 ep_lens.append(current_ep_len)
                 cur_ep_ret = 0
-                cur_ep_true_ret = 0
                 current_ep_len = 0
-                observation = self.env.reset()
-            step += 1
+                obs = self.env.reset()
 
-    @staticmethod
-    def _add_vtarg_and_adv(seg, gamma, lam):  # TODO: make terminals optional
+        return {
+            "observations": np.asarray(observations),
+            "next_observations": np.asarray(next_observations),
+            "rewards": np.asarray(rewards),
+            "dones": np.asarray(dones),
+            "actions": np.asarray(actions),
+            "ep_rets": ep_rets,
+            "ep_lens": ep_lens,
+            "total_timestep": len(observations),
+        }
+
+    def _add_vtarg_and_adv(self, seg, gamma, lam, ignore_dones=False):
         """Compute target value using TD estimator, and advantage with GAE.
 
         Parameters
@@ -374,21 +327,34 @@ class RLAlgorithm(object):
             Discount factor
         lam : float
             GAE factor
+        ignore_dones : bool
+            specifies whether to ignore the done mask when computing the delta
+            terms
         """
-        # last element is only used for last vtarg, but we already zeroed it if
-        # last new = 1
-        episode_starts = np.append(seg["episode_starts"], False)
-        vpred = np.append(seg["vpred"], seg["nextvpred"])
+        # Grab relevant variables.
+        observations = seg['observations']
+        next_observations = seg['next_observations']
+        dones = seg['dones']
+        rewards = seg["rewards"]
+
+        # Initialize empty advantages.
         rew_len = len(seg["rewards"])
         seg["adv"] = np.empty(rew_len, 'float32')
-        rewards = seg["rewards"]
+        seg["vpred"] = np.empty(rew_len, 'float32')
+
         lastgaelam = 0
         for step in reversed(range(rew_len)):
-            nonterminal = 1 - float(episode_starts[step + 1])
-            delta = rewards[step] + gamma * vpred[step + 1] * nonterminal - \
-                vpred[step]
-            seg["adv"][step] = \
-                lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
+            # Compute the predictions of the value function.
+            vpred = self.policy_pi.value([observations[step]])
+            next_vpred = self.policy_pi.value([next_observations[step]])
+            seg["vpred"][step] = vpred
+
+            # Compute the next step advantage
+            notdone = 1 if ignore_dones else 1 - dones[step]
+            delta = rewards[step] + gamma * notdone * next_vpred - vpred
+            seg["adv"][step] = lastgaelam = \
+                delta + gamma * lam * (1 - dones[step]) * lastgaelam
+
         seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
     def _train(self, seg, writer, total_timesteps):
