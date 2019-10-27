@@ -51,7 +51,8 @@ class FeedForwardPolicy(object):
                  ac_space,
                  reuse=False,
                  layers=None,
-                 act_fun=tf.tanh,
+                 act_fun=tf.nn.relu,
+                 bounded_mean=False,
                  shared=True,
                  duel_vf=False):
         """Instantiate the policy.
@@ -71,6 +72,10 @@ class FeedForwardPolicy(object):
             [256, 256])
         act_fun : tf.nn.*
             the activation function to use in the neural network.
+        bounded_mean : bool
+            specifies whether to bind the mean of the actor policy by the
+            action space. This is done by introducing a tanh nonlinearity to
+            the output layer and then scaling it by the action space.
         shared : bool
             specifies whether to shared the hidden layers between the actor and
             critic
@@ -84,6 +89,7 @@ class FeedForwardPolicy(object):
         self.reuse = reuse
         self.layers = layers or [256, 256]
         self.act_fun = act_fun
+        self.bounded_mean = bounded_mean
         self.shared = shared
         self.duel_vf = duel_vf
 
@@ -311,7 +317,14 @@ class FeedForwardPolicy(object):
 
         # Add an extra layer after the shared layers to produce the mean action
         # by the actor.
-        mean = self._layer(pi_latent, self.ac_space.shape[0], 'pi_mean', None)
+        activ = tf.nn.tanh if self.bounded_mean else None
+        mean = self._layer(pi_latent, self.ac_space.shape[0], 'pi_mean', activ)
+
+        # Scale the mean to match the action space, if requested.
+        if self.bounded_mean:
+            action_mean = 0.5 * (self.ac_space.high + self.ac_space.low)
+            action_magnitude = 0.5 * (self.ac_space.high - self.ac_space.low)
+            mean = mean * action_magnitude + action_mean
 
         # The logstd is a single trainable variable.
         logstd = tf.get_variable(

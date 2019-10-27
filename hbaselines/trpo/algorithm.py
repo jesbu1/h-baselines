@@ -338,12 +338,12 @@ class RLAlgorithm(object):
         rewards = seg["rewards"]
 
         # Initialize empty advantages.
-        rew_len = len(seg["rewards"])
-        seg["adv"] = np.empty(rew_len, 'float32')
-        seg["vpred"] = np.empty(rew_len, 'float32')
+        seg_len = len(seg["rewards"])
+        seg["adv"] = np.empty(seg_len, 'float32')
+        seg["vpred"] = np.empty(seg_len, 'float32')
 
         lastgaelam = 0
-        for step in reversed(range(rew_len)):
+        for step in reversed(range(seg_len)):
             # Compute the predictions of the value function.
             vpred = self.policy_pi.value([observations[step]])
             next_vpred = self.policy_pi.value([next_observations[step]])
