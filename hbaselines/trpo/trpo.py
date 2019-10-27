@@ -5,10 +5,8 @@ import os
 import csv
 
 import gym
-from gym.spaces import Discrete
 import tensorflow as tf
 import numpy as np
-import random
 
 import stable_baselines.common.tf_util as tf_util
 from stable_baselines.common import explained_variance, zipsame, dataset
@@ -16,7 +14,6 @@ from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.cg import conjugate_gradient
 from hbaselines.trpo.algorithm import RLAlgorithm
 from hbaselines.trpo.utils import add_vtarg_and_adv
-from hbaselines.common.utils import ensure_dir
 
 try:
     from flow.utils.registry import make_create_env
@@ -34,7 +31,7 @@ class TRPO(RLAlgorithm):
     gamma : float
         the discount value
     timesteps_per_batch : int
-        the number of timesteps to run per batch (horizon)
+        the number of timesteps to run per batch (epoch)
     max_kl : float
         the Kullback-Leibler loss threshold
     cg_iters : int
@@ -79,8 +76,6 @@ class TRPO(RLAlgorithm):
         TODO
     summary : TODO
         TODO
-    episode_reward : TODO
-        TODO
     len_buffer : TODO
         TODO
     reward_buffer : TODO
@@ -108,7 +103,6 @@ class TRPO(RLAlgorithm):
                  vf_stepsize=3e-4,
                  vf_iters=3,
                  verbose=0,
-                 _init_setup_model=True,
                  policy_kwargs=None):
         """Instantiate the algorithm.
 
@@ -121,7 +115,7 @@ class TRPO(RLAlgorithm):
         gamma : float
             the discount value
         timesteps_per_batch : int
-            the number of timesteps to run per batch (horizon)
+            the number of timesteps to run per batch (epoch)
         max_kl : float
             the Kullback-Leibler loss threshold
         cg_iters : int
@@ -139,14 +133,12 @@ class TRPO(RLAlgorithm):
         verbose : int
             the verbosity level: 0 none, 1 training information, 2 tensorflow
             debug
-        _init_setup_model : bool
-            Whether or not to build the network at the creation of the instance
         policy_kwargs : dict
             additional arguments to be passed to the policy on creation
         """
-        super(TRPO, self).__init__(policy, env, verbose, policy_kwargs)
+        super(TRPO, self).__init__(policy, env, timesteps_per_batch, verbose,
+                                   policy_kwargs)
 
-        self.timesteps_per_batch = timesteps_per_batch
         self.cg_iters = cg_iters
         self.cg_damping = cg_damping
         self.gamma = gamma
@@ -156,9 +148,6 @@ class TRPO(RLAlgorithm):
         self.vf_stepsize = vf_stepsize
         self.entcoeff = entcoeff
 
-        self.graph = None
-        self.sess = None
-        self.policy_pi = None
         self.loss_names = None
         self.assign_old_eq_new = None
         self.compute_losses = None
@@ -172,8 +161,6 @@ class TRPO(RLAlgorithm):
         self.params = None
         self.summary = None
 
-        # total results from the most recent training step.
-        self.episode_reward = np.zeros((1,))
         # rolling buffer for episode lengths
         self.len_buffer = deque(maxlen=40)
         # rolling buffer for episode rewards
@@ -187,23 +174,15 @@ class TRPO(RLAlgorithm):
         # TODO
         self.num_timesteps = 0
 
-        if _init_setup_model:
-            self.setup_model()
+        # Perform the algorithm-specific model setup procedure.
+        self.setup_model()
+
+        with self.graph.as_default():
+            # Create the tensorboard summary.
+            self.summary = tf.summary.merge_all()
 
     def setup_model(self):
-        self.graph = tf.Graph()
         with self.graph.as_default():
-            # Create the tensorflow session.
-            self.sess = tf_util.single_threaded_session(graph=self.graph)
-
-            # Construct network for new policy
-            self.policy_pi = self.policy(
-                self.sess,
-                self.observation_space,
-                self.action_space,
-                reuse=False,
-                **self.policy_kwargs)
-
             # Network for old policy
             with tf.variable_scope("oldpi", reuse=False):
                 old_policy = self.policy(
@@ -317,67 +296,16 @@ class TRPO(RLAlgorithm):
             self.params = tf_util.get_trainable_vars("model") \
                 + tf_util.get_trainable_vars("oldpi")
 
-            # Create the tensorboard summary.
-            self.summary = tf.summary.merge_all()
-
             self.compute_lossandgrad = \
                 tf_util.function(
                     [observation, old_policy.obs_ph, action, atarg, ret],
                     [self.summary, tf_util.flatgrad(optimgain, var_list)]
                     + losses)
 
-    def learn(self, total_timesteps, log_dir, seed=None):
-        """See parent class."""
-        # Make sure that the log directory exists, and if not, make it.
-        ensure_dir(log_dir)
-        ensure_dir(os.path.join(log_dir, "checkpoints"))
+    def _train(self, seg, writer, total_timesteps):
+        """See parent class.
 
-        # Create a tensorboard object for logging.
-        # save_path = os.path.join(log_dir, "tb_log")
-        # writer = tf.compat.v1.summary.FileWriter(save_path)
-        writer = None
-
-        # file path for training statistics
-        train_filepath = os.path.join(log_dir, "train.csv")
-
-        # Set all relevant seeds.
-        tf.set_random_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        # prng was removed in latest gym version
-        if hasattr(gym.spaces, 'prng'):
-            gym.spaces.prng.seed(seed)
-
-        # Compute the start time, for logging purposes
-        t_start = time.time()
-
-        with self.sess.as_default():
-            seg_gen = self._collect_samples(self.policy_pi,
-                                            self.timesteps_per_batch)
-
-            while self.timesteps_so_far < total_timesteps:
-                print("\n********** Iteration %i ************" %
-                      self.iters_so_far)
-
-                # Collect samples.
-                with self.timed("Sampling"):
-                    seg = seg_gen.__next__()
-
-                # Perform the training procedure.
-                mean_losses, vpredbefore, tdlamret = self._train(seg, writer)
-
-                # Log the training statistics.
-                self._log_training(t_start, train_filepath, seg, mean_losses,
-                                   vpredbefore, tdlamret)
-
-        return self
-
-    def _train(self, seg, writer):
-        """
-
-        :param seg:
-        :param writer:
-        :return:
+        TODO: describe
         """
         def fisher_vector_product(vec):  # TODO: move somewhere else
             return self.compute_fvp(vec, *fvpargs, sess=self.sess) \
@@ -486,16 +414,7 @@ class TRPO(RLAlgorithm):
                       mean_losses,
                       vpredbefore,
                       tdlamret):
-        """TODO
-
-        :param t_start:
-        :param file_path:
-        :param seg:
-        :param mean_losses:
-        :param vpredbefore:
-        :param tdlamret:
-        :return:
-        """
+        """See parent class."""
         lens, rews = seg["ep_lens"], seg["ep_rets"]
         current_it_timesteps = seg["total_timestep"]
 
@@ -507,18 +426,18 @@ class TRPO(RLAlgorithm):
         self.iters_so_far += 1
 
         stats = {
-            "episode_steps": np.mean(self.len_buffer),
-            "mean_return": np.mean(self.reward_buffer),
-            "max_return": np.max(self.reward_buffer),
-            "min_return": np.min(self.reward_buffer),
-            "std_return": np.std(self.reward_buffer),
+            "episode_steps": np.mean(lens),
+            "mean_return_history": np.mean(self.reward_buffer),
+            "mean_return": np.mean(rews),
+            "max_return": max(rews, default=0),
+            "min_return": min(rews, default=0),
+            "std_return": np.std(rews),
             "episodes_this_itr": len(lens),
             "episodes_total": self.episodes_so_far,
             "steps": self.num_timesteps,
             "epoch": self.iters_so_far,
             "duration": time.time() - t_start,
-            "steps_per_second":
-                self.timesteps_so_far / (time.time() - t_start),
+            "steps_per_second": self.timesteps_so_far / (time.time()-t_start),
             # TODO: what is this?
             "explained_variance": explained_variance(vpredbefore, tdlamret),
         }
@@ -535,9 +454,10 @@ class TRPO(RLAlgorithm):
                 w.writerow(stats)
 
         # Print statistics.
-        print("-" * 47)
-        for key in sorted(stats.keys()):
-            val = stats[key]
-            print("| {:<20} | {:<20g} |".format(key, val))
-        print("-" * 47)
-        print('')
+        if self.verbose >= 1:
+            print("-" * 47)
+            for key in sorted(stats.keys()):
+                val = stats[key]
+                print("| {:<20} | {:<20g} |".format(key, val))
+            print("-" * 47)
+            print('')

@@ -1,10 +1,14 @@
 """Script containing the TRPO algorithm object."""
 import numpy as np
+import os
 import time
 from contextlib import contextmanager
+import random
 import gym
 from gym.spaces import Box
+import tensorflow as tf
 from stable_baselines.common import colorize
+from hbaselines.common.utils import ensure_dir
 
 try:
     from flow.utils.registry import make_create_env
@@ -25,10 +29,16 @@ class RLAlgorithm(object):
         the observation space of the training environment
     action_space : gym.spaces.*
         the action space of the training environment
+    timesteps_per_batch : int
+        the number of timesteps to run per batch (epoch)
     verbose : int
         the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     policy_kwargs : dict
         additional arguments to be passed to the policy on creation
+    graph : tf.Graph
+        the current tensorflow graph
+    sess : tf.compat.v1.Session
+        the current tensorflow session
     timed : function
         a utility method that is used to compute the time a specific process
         takes to finish.
@@ -37,6 +47,7 @@ class RLAlgorithm(object):
     def __init__(self,
                  policy,
                  env,
+                 timesteps_per_batch,
                  verbose=0,
                  policy_kwargs=None):
         """Instantiate the algorithm.
@@ -47,6 +58,8 @@ class RLAlgorithm(object):
             The policy model to use
         env : gym.Env or str
             The environment to learn from (if registered in Gym, can be str)
+        timesteps_per_batch : int
+            the number of timesteps to run per batch (epoch)
         verbose : int
             the verbosity level: 0 none, 1 training information, 2 tensorflow
             debug
@@ -57,8 +70,23 @@ class RLAlgorithm(object):
         self.env = self._create_env(env)
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
+        self.timesteps_per_batch = timesteps_per_batch
         self.verbose = verbose
         self.policy_kwargs = policy_kwargs or {}
+
+        # Create the tensorflow graph and session objects.
+        self.graph = tf.Graph()
+        with self.graph.as_default():
+            self.sess = tf.compat.v1.Session(graph=self.graph)
+
+            # Construct network for new policy.
+            self.policy_pi = self.policy(
+                self.sess,
+                self.observation_space,
+                self.action_space,
+                reuse=False,
+                **self.policy_kwargs
+            )
 
         # The following method is used to compute the time a specific process
         # takes to finish.
@@ -128,7 +156,51 @@ class RLAlgorithm(object):
         seed : int or None
             the initial seed for training, if None: keep current seed
         """
-        raise NotImplementedError
+        # Make sure that the log directory exists, and if not, make it.
+        ensure_dir(log_dir)
+        ensure_dir(os.path.join(log_dir, "checkpoints"))
+
+        # Create a tensorboard object for logging.
+        save_path = os.path.join(log_dir, "tb_log")
+        writer = tf.compat.v1.summary.FileWriter(save_path)
+
+        # file path for training statistics
+        train_filepath = os.path.join(log_dir, "train.csv")
+
+        # Set all relevant seeds.
+        tf.set_random_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+
+        # Compute the start time, for logging purposes
+        t_start = time.time()
+
+        with self.sess.as_default():
+            seg_gen = self._collect_samples(self.policy_pi,
+                                            self.timesteps_per_batch)
+
+            iters_so_far = 0
+            timesteps_so_far = 0
+            while timesteps_so_far < total_timesteps:
+                print("\n********** Iteration %i ************" % iters_so_far)
+
+                # Collect samples.
+                with self.timed("Sampling"):
+                    seg = seg_gen.__next__()
+
+                # Perform the training procedure.
+                mean_losses, vpredbefore, tdlamret = self._train(
+                    seg, writer, total_timesteps)
+
+                # Log the training statistics.
+                self._log_training(t_start, train_filepath, seg, mean_losses,
+                                   vpredbefore, tdlamret)
+
+                # Increment relevant variables.
+                iters_so_far += 1
+                timesteps_so_far += seg["total_timestep"]
+
+        return self
 
     def _collect_samples(self, policy, n_samples):
         """Compute target value using TD estimator, and advantage with GAE.
@@ -252,6 +324,35 @@ class RLAlgorithm(object):
                 current_ep_len = 0
                 observation = self.env.reset()
             step += 1
+
+    def _train(self, seg, writer, total_timesteps):
+        """TODO
+
+        :param seg:
+        :param writer:
+        :param total_timesteps:  FIXME: remove?
+        :return:
+        """
+        raise NotImplementedError
+
+    def _log_training(self,
+                      t_start,
+                      file_path,
+                      seg,
+                      mean_losses,
+                      vpredbefore,
+                      tdlamret):
+        """TODO
+
+        :param t_start:
+        :param file_path:
+        :param seg:
+        :param mean_losses:
+        :param vpredbefore:
+        :param tdlamret:
+        :return:
+        """
+        raise NotImplementedError
 
     def save(self, save_path):
         """FIXME

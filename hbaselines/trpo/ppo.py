@@ -4,20 +4,16 @@ import os
 import csv
 
 import gym
-from gym.spaces import Discrete
 import tensorflow as tf
 import numpy as np
-import random
 
 from stable_baselines.common import Dataset, explained_variance, fmt_row, \
     zipsame
-from stable_baselines import logger
 import stable_baselines.common.tf_util as tf_util
 from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.mpi_moments import mpi_moments
 from stable_baselines.trpo_mpi.utils import add_vtarg_and_adv
 from hbaselines.trpo.algorithm import RLAlgorithm
-from hbaselines.common.utils import ensure_dir
 
 
 class PPO(RLAlgorithm):
@@ -31,7 +27,7 @@ class PPO(RLAlgorithm):
         The environment to learn from (if registered in Gym, can be str)
     policy : TODO
         The policy model to use
-    timesteps_per_actorbatch : int
+    timesteps_per_batch : int
         timesteps per actor per update
     clip_param : float
         clipping parameter epsilon
@@ -54,8 +50,6 @@ class PPO(RLAlgorithm):
         'constant', 'double_linear_con', 'middle_drop' or 'double_middle_drop')
     verbose : int
         the verbosity level: 0 none, 1 training information, 2 tensorflow debug
-    _init_setup_model : bool
-        Whether or not to build the network at the creation of the instance
     policy_kwargs : dict
         additional arguments to be passed to the policy on creation
     """
@@ -64,7 +58,7 @@ class PPO(RLAlgorithm):
                  policy,
                  env,
                  gamma=0.99,
-                 timesteps_per_actorbatch=256,
+                 timesteps_per_batch=256,
                  clip_param=0.2,
                  entcoeff=0.01,
                  optim_epochs=4,
@@ -74,7 +68,6 @@ class PPO(RLAlgorithm):
                  adam_epsilon=1e-5,
                  schedule='linear',
                  verbose=0,
-                 _init_setup_model=True,
                  policy_kwargs=None):
         """Initialize the algorithm.
 
@@ -84,7 +77,7 @@ class PPO(RLAlgorithm):
             The environment to learn from (if registered in Gym, can be str)
         policy : TODO
             The policy model to use
-        timesteps_per_actorbatch : int
+        timesteps_per_batch : int
             timesteps per actor per update
         clip_param : float
             clipping parameter epsilon
@@ -109,15 +102,14 @@ class PPO(RLAlgorithm):
         verbose : int
             the verbosity level: 0 none, 1 training information, 2 tensorflow
             debug
-        _init_setup_model : bool
-            Whether or not to build the network at the creation of the instance
         policy_kwargs : dict
             additional arguments to be passed to the policy on creation
         """
-        super(PPO, self).__init__(policy, env, verbose, policy_kwargs)
+        super(PPO, self).__init__(policy, env, timesteps_per_batch, verbose,
+                                  policy_kwargs)
 
         self.gamma = gamma
-        self.timesteps_per_actorbatch = timesteps_per_actorbatch
+        self.timesteps_per_batch = timesteps_per_batch
         self.clip_param = clip_param
         self.entcoeff = entcoeff
         self.optim_epochs = optim_epochs
@@ -127,21 +119,12 @@ class PPO(RLAlgorithm):
         self.adam_epsilon = adam_epsilon
         self.schedule = schedule
 
-        self.graph = None
-        self.sess = None
-        self.policy_pi = None
         self.loss_names = None
-        self.lossandgrad = None
         self.adam = None
         self.assign_old_eq_new = None
-        self.compute_losses = None
         self.params = None
-        self.step = None
-        self.proba_step = None
         self.summary = None
 
-        # total results from the most recent training step.
-        self.episode_reward = np.zeros((1,))
         # rolling buffer for episode lengths
         self.len_buffer = deque(maxlen=40)
         # rolling buffer for episode rewards
@@ -155,23 +138,24 @@ class PPO(RLAlgorithm):
         # TODO
         self.num_timesteps = 0
 
-        if _init_setup_model:
-            self.setup_model()
+        # Perform the algorithm-specific model setup procedure.
+        self.setup_model()
+
+        with self.graph.as_default():
+            # Create the tensorboard summary.
+            self.summary = tf.summary.merge_all()
+
+            # Initialize the model parameters and optimizers.
+            with self.sess.as_default():
+                self.sess.run(tf.global_variables_initializer())
+                self.adam.sync()
 
     def setup_model(self):
-        self.graph = tf.Graph()
+        """
+
+        :return:
+        """
         with self.graph.as_default():
-            self.sess = tf_util.single_threaded_session(graph=self.graph)
-
-            # Construct network for new policy
-            self.policy_pi = self.policy(
-                self.sess,
-                self.observation_space,
-                self.action_space,
-                reuse=False,
-                **self.policy_kwargs
-            )
-
             # Network for old policy
             with tf.variable_scope("oldpi", reuse=False):
                 old_pi = self.policy(
@@ -181,23 +165,26 @@ class PPO(RLAlgorithm):
                     reuse=False,
                     **self.policy_kwargs
                 )
+                self.old_pi = old_pi
 
             with tf.variable_scope("loss", reuse=False):
                 # Target advantage function (if applicable)
                 atarg = tf.placeholder(dtype=tf.float32, shape=[None])
+                self.atarg = atarg
 
                 # Empirical return
                 ret = tf.placeholder(dtype=tf.float32, shape=[None])
+                self.ret = ret
 
                 # learning rate multiplier, updated with schedule
                 lrmult = tf.placeholder(
                     name='lrmult', dtype=tf.float32, shape=[])
+                self.lrmult = lrmult
 
                 # Annealed clipping parameter epsilon
                 clip_param = self.clip_param * lrmult
 
-                obs_ph = self.policy_pi.obs_ph
-                action_ph = tf.placeholder(
+                self.action_ph = tf.placeholder(
                     tf.float32,
                     shape=(None, self.action_space.shape[0]))
 
@@ -210,8 +197,8 @@ class PPO(RLAlgorithm):
 
                 # pnew / pold
                 ratio = tf.exp(
-                    self.policy_pi.proba_distribution.logp(action_ph) -
-                    old_pi.proba_distribution.logp(action_ph))
+                    self.policy_pi.proba_distribution.logp(self.action_ph) -
+                    old_pi.proba_distribution.logp(self.action_ph))
 
                 # surrogate from conservative policy iteration
                 surr1 = ratio * atarg
@@ -223,7 +210,7 @@ class PPO(RLAlgorithm):
                 vf_loss = tf.reduce_mean(
                     tf.square(self.policy_pi.value_flat - ret))
                 total_loss = pol_surr + pol_entpen + vf_loss
-                losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
+                self.losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
                 self.loss_names = ["pol_surr", "pol_entpen", "vf_loss", "kl",
                                    "ent"]
 
@@ -254,85 +241,18 @@ class PPO(RLAlgorithm):
                 tf.summary.scalar('clip_range',
                                   tf.reduce_mean(self.clip_param))
 
-            self.step = self.policy_pi.step
-            self.proba_step = self.policy_pi.proba_step
-
-            tf_util.initialize(sess=self.sess)
-
-            self.summary = tf.summary.merge_all()
-
-            self.lossandgrad = tf_util.function(
-                [obs_ph, old_pi.obs_ph, action_ph, atarg, ret, lrmult],
-                [self.summary, tf_util.flatgrad(total_loss, self.params)]
-                + losses)
-            self.compute_losses = tf_util.function(
-                [obs_ph, old_pi.obs_ph, action_ph, atarg, ret, lrmult],
-                losses)
-
-    def learn(self, total_timesteps, log_dir, seed=None):
-        """See parent class."""
-        # Make sure that the log directory exists, and if not, make it.
-        ensure_dir(log_dir)
-        ensure_dir(os.path.join(log_dir, "checkpoints"))
-
-        # Create a tensorboard object for logging.
-        # save_path = os.path.join(log_dir, "tb_log")
-        # writer = tf.compat.v1.summary.FileWriter(save_path)
-        writer = None
-
-        # file path for training statistics
-        train_filepath = os.path.join(log_dir, "train.csv")
-
-        # Set all relevant seeds.
-        tf.set_random_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        # prng was removed in latest gym version
-        if hasattr(gym.spaces, 'prng'):
-            gym.spaces.prng.seed(seed)
-
-        # Compute the start time, for logging purposes
-        t_start = time.time()
-
-        with self.sess.as_default():
-            self.adam.sync()
-
-            # Prepare for rollouts
-            seg_gen = self._collect_samples(self.policy_pi,
-                                            self.timesteps_per_actorbatch)
-
-            while self.timesteps_so_far < total_timesteps:
-                logger.log("\n********** Iteration %i ************"
-                           % self.iters_so_far)
-
-                # Collect samples.
-                with self.timed("Sampling"):
-                    seg = seg_gen.__next__()
-
-                # Perform the training procedure.
-                mean_losses, vpredbefore, tdlamret = self._train(
-                    seg, writer, total_timesteps)
-
-                # Log the training statistics.
-                self._log_training(t_start, train_filepath, seg, mean_losses,
-                                   vpredbefore, tdlamret)
-
-        return self
+            self.flat_grad = tf_util.flatgrad(total_loss, self.params)
 
     def _train(self, seg, writer, total_timesteps):
-        """TODO
+        """See parent class.
 
-        :param seg:
-        :param writer:
-        :param total_timesteps:  FIXME: remove?
-        :return:
+        TODO: describe
         """
         if self.schedule == 'constant':
             cur_lrmult = 1.0
         elif self.schedule == 'linear':
             cur_lrmult = max(
-                1.0 - float(self.timesteps_so_far) / total_timesteps,
-                0)
+                1.0 - float(self.timesteps_so_far) / total_timesteps, 0)
         else:
             raise NotImplementedError
 
@@ -353,41 +273,52 @@ class PPO(RLAlgorithm):
 
         # set old parameter values to new parameter values
         self.assign_old_eq_new(sess=self.sess)
-        logger.log("Optimizing...")
-        logger.log(fmt_row(13, self.loss_names))
+        print("Optimizing...")
+        print(fmt_row(13, self.loss_names))
 
         # Here we do a bunch of optimization epochs over the data.
         for k in range(int(self.optim_epochs)):
             # list of tuples, each of which gives the loss for a minibatch
             losses = []
             for i, batch in enumerate(dataset.iterate_once(optim_batchsize)):
+                # TODO: remove?
                 steps = (self.num_timesteps +
                          k * optim_batchsize +
                          int(i * (optim_batchsize / len(dataset.data_map))))
-                if writer is not None:
-                    # run loss backprop with summary, but once every 10
-                    # runs save the metadata (memory, compute time, ...)
-                    summary, grad, *newlosses = self.lossandgrad(
-                        batch["ob"], batch["ob"], batch["ac"],
-                        batch["atarg"], batch["vtarg"],
-                        cur_lrmult, sess=self.sess)
-                    writer.add_summary(summary, steps)
-                else:
-                    _, grad, *newlosses = self.lossandgrad(
-                        batch["ob"], batch["ob"], batch["ac"],
-                        batch["atarg"], batch["vtarg"], cur_lrmult,
-                        sess=self.sess)
+                # Run loss backprop with summary.
+                summary, grad, *newlosses = self.sess.run(
+                    [self.summary, self.flat_grad] + self.losses,
+                    feed_dict={
+                        self.policy_pi.obs_ph: batch["ob"],
+                        self.old_pi.obs_ph: batch["ob"],
+                        self.action_ph: batch["ac"],
+                        self.atarg: batch["atarg"],
+                        self.ret: batch["vtarg"],
+                        self.lrmult: cur_lrmult,
+                    }
+                )
+                # TODO: out of loop?
+                writer.add_summary(summary, steps)
 
                 self.adam.update(grad, self.optim_stepsize * cur_lrmult)
                 losses.append(newlosses)
-            logger.log(fmt_row(13, np.mean(losses, axis=0)))
+            print(fmt_row(13, np.mean(losses, axis=0)))
 
-        logger.log("Evaluating losses...")
+        # TODO: remove?
+        print("Evaluating losses...")
         losses = []
         for batch in dataset.iterate_once(optim_batchsize):
-            newlosses = self.compute_losses(
-                batch["ob"], batch["ob"], batch["ac"], batch["atarg"],
-                batch["vtarg"], cur_lrmult, sess=self.sess)
+            newlosses = self.sess.run(
+                self.losses,
+                feed_dict={
+                    self.policy_pi.obs_ph: batch["ob"],
+                    self.old_pi.obs_ph: batch["ob"],
+                    self.action_ph: batch["ac"],
+                    self.atarg: batch["atarg"],
+                    self.ret: batch["vtarg"],
+                    self.lrmult: cur_lrmult,
+                }
+            )
             losses.append(newlosses)
         mean_losses, _, _ = mpi_moments(losses, axis=0)
 
@@ -400,16 +331,7 @@ class PPO(RLAlgorithm):
                       mean_losses,
                       vpredbefore,
                       tdlamret):
-        """TODO
-
-        :param t_start:
-        :param file_path:
-        :param seg:
-        :param mean_losses:
-        :param vpredbefore:
-        :param tdlamret:
-        :return:
-        """
+        """See parent class."""
         lens, rews = seg["ep_lens"], seg["ep_rets"]
         current_it_timesteps = seg["total_timestep"]
 
@@ -417,22 +339,42 @@ class PPO(RLAlgorithm):
         self.reward_buffer.extend(rews)
         self.episodes_so_far += len(lens)
         self.timesteps_so_far += current_it_timesteps
-        self.num_timesteps += current_it_timesteps
+        self.num_timesteps += current_it_timesteps  # TODO: remove
         self.iters_so_far += 1
 
-        logger.log(fmt_row(13, mean_losses))
+        stats = {
+            "episode_steps": np.mean(lens),
+            "mean_return_history": np.mean(self.reward_buffer),
+            "mean_return": np.mean(rews),
+            "max_return": max(rews, default=0),
+            "min_return": min(rews, default=0),
+            "std_return": np.std(rews),
+            "episodes_this_itr": len(lens),
+            "episodes_total": self.episodes_so_far,
+            "steps": self.num_timesteps,
+            "epoch": self.iters_so_far,
+            "duration": time.time() - t_start,
+            "steps_per_second": self.timesteps_so_far / (time.time()-t_start),
+            # TODO: what is this?
+            "ev_tdlam_before": explained_variance(vpredbefore, tdlamret)
+        }
         for (loss_val, name) in zipsame(mean_losses, self.loss_names):
-            logger.record_tabular("loss_" + name, loss_val)
-        logger.record_tabular("ev_tdlam_before",
-                              explained_variance(vpredbefore, tdlamret))
+            stats["loss_" + name] = loss_val
 
-        if len(self.len_buffer) > 0:
-            logger.record_tabular("EpLenMean", np.mean(self.len_buffer))
-            logger.record_tabular("EpRewMean", np.mean(self.reward_buffer))
-        logger.record_tabular("EpThisIter", len(lens))
-        logger.record_tabular("EpisodesSoFar", self.episodes_so_far)
-        logger.record_tabular("TimestepsSoFar", self.num_timesteps)
-        logger.record_tabular("TimeElapsed", time.time() - t_start)
+        # Save combined_stats in a csv file.
+        if file_path is not None:
+            exists = os.path.exists(file_path)
+            with open(file_path, 'a') as f:
+                w = csv.DictWriter(f, fieldnames=stats.keys())
+                if not exists:
+                    w.writeheader()
+                w.writerow(stats)
 
+        # Print statistics.
         if self.verbose >= 1:
-            logger.dump_tabular()
+            print("-" * 47)
+            for key in sorted(stats.keys()):
+                val = stats[key]
+                print("| {:<20} | {:<20g} |".format(key, val))
+            print("-" * 47)
+            print('')
