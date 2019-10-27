@@ -1,13 +1,15 @@
 """Script containing the TRPO algorithm object."""
 import numpy as np
+import csv
 import os
 import time
 from contextlib import contextmanager
+from collections import deque
 import random
 import gym
 from gym.spaces import Box
 import tensorflow as tf
-from stable_baselines.common import colorize
+from stable_baselines.common import colorize, explained_variance
 from hbaselines.common.utils import ensure_dir
 
 try:
@@ -31,10 +33,27 @@ class RLAlgorithm(object):
         the action space of the training environment
     timesteps_per_batch : int
         the number of timesteps to run per batch (epoch)
+    gamma : float
+        discount factor
+    lam : float
+        advantage estimation
     verbose : int
         the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     policy_kwargs : dict
         additional arguments to be passed to the policy on creation
+    len_buffer : collections.deque
+        rolling buffer for episode lengths
+    reward_buffer : collections.deque
+        rolling buffer for episode rewards
+    episodes_so_far : int
+        the total number of rollouts performed since training began
+    timesteps_so_far : int
+        the total number of steps that have been executed since training began
+    iters_so_far : int
+        the total number of training iterations since training began
+    loss_names : list of str
+        The names of the losses as they are added to the training statistics.
+        This should be filled by the child classes.
     graph : tf.Graph
         the current tensorflow graph
     sess : tf.compat.v1.Session
@@ -48,6 +67,8 @@ class RLAlgorithm(object):
                  policy,
                  env,
                  timesteps_per_batch,
+                 gamma,
+                 lam,
                  verbose=0,
                  policy_kwargs=None):
         """Instantiate the algorithm.
@@ -60,6 +81,10 @@ class RLAlgorithm(object):
             The environment to learn from (if registered in Gym, can be str)
         timesteps_per_batch : int
             the number of timesteps to run per batch (epoch)
+        gamma : float
+            discount factor
+        lam : float
+            advantage estimation
         verbose : int
             the verbosity level: 0 none, 1 training information, 2 tensorflow
             debug
@@ -71,8 +96,18 @@ class RLAlgorithm(object):
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
         self.timesteps_per_batch = timesteps_per_batch
+        self.gamma = gamma
+        self.lam = lam
         self.verbose = verbose
         self.policy_kwargs = policy_kwargs or {}
+
+        # some variables used during the logging procedure
+        self.len_buffer = deque(maxlen=40)
+        self.reward_buffer = deque(maxlen=40)
+        self.episodes_so_far = 0
+        self.timesteps_so_far = 0
+        self.iters_so_far = 0
+        self.loss_names = []  # this should be filled by the child classes
 
         # Create the tensorflow graph and session objects.
         self.graph = tf.Graph()
@@ -172,7 +207,7 @@ class RLAlgorithm(object):
         np.random.seed(seed)
         random.seed(seed)
 
-        # Compute the start time, for logging purposes
+        # Compute the start time, for logging purposes.
         t_start = time.time()
 
         with self.sess.as_default():
@@ -187,6 +222,7 @@ class RLAlgorithm(object):
                 # Collect samples.
                 with self.timed("Sampling"):
                     seg = seg_gen.__next__()
+                    self._add_vtarg_and_adv(seg, self.gamma, self.lam)
 
                 # Perform the training procedure.
                 mean_losses, vpredbefore, tdlamret = self._train(
@@ -325,6 +361,36 @@ class RLAlgorithm(object):
                 observation = self.env.reset()
             step += 1
 
+    @staticmethod
+    def _add_vtarg_and_adv(seg, gamma, lam):  # TODO: make terminals optional
+        """Compute target value using TD estimator, and advantage with GAE.
+
+        Parameters
+        ----------
+        seg : dict
+            the current segment of the trajectory (see _collect_samples return
+            for more information)
+        gamma : float
+            Discount factor
+        lam : float
+            GAE factor
+        """
+        # last element is only used for last vtarg, but we already zeroed it if
+        # last new = 1
+        episode_starts = np.append(seg["episode_starts"], False)
+        vpred = np.append(seg["vpred"], seg["nextvpred"])
+        rew_len = len(seg["rewards"])
+        seg["adv"] = np.empty(rew_len, 'float32')
+        rewards = seg["rewards"]
+        lastgaelam = 0
+        for step in reversed(range(rew_len)):
+            nonterminal = 1 - float(episode_starts[step + 1])
+            delta = rewards[step] + gamma * vpred[step + 1] * nonterminal - \
+                vpred[step]
+            seg["adv"][step] = \
+                lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
+        seg["tdlamret"] = seg["adv"] + seg["vpred"]
+
     def _train(self, seg, writer, total_timesteps):
         """TODO
 
@@ -352,7 +418,51 @@ class RLAlgorithm(object):
         :param tdlamret:
         :return:
         """
-        raise NotImplementedError
+        lens, rews = seg["ep_lens"], seg["ep_rets"]
+        current_it_timesteps = seg["total_timestep"]
+
+        self.len_buffer.extend(lens)
+        self.reward_buffer.extend(rews)
+        self.episodes_so_far += len(lens)
+        self.timesteps_so_far += current_it_timesteps
+        self.iters_so_far += 1
+
+        stats = {
+            "episode_steps": np.mean(lens),
+            "mean_return_history": np.mean(self.reward_buffer),
+            "mean_return": np.mean(rews),
+            "max_return": max(rews, default=0),
+            "min_return": min(rews, default=0),
+            "std_return": np.std(rews),
+            "episodes_this_itr": len(lens),
+            "episodes_total": self.episodes_so_far,
+            "total_steps": self.timesteps_so_far,
+            "epoch": self.iters_so_far,
+            "duration": time.time() - t_start,
+            "steps_per_second": self.timesteps_so_far / (time.time()-t_start),
+            # TODO: what is this?
+            "explained_variance": explained_variance(vpredbefore, tdlamret),
+        }
+        for (loss_name, loss_val) in zip(self.loss_names, mean_losses):
+            stats[loss_name] = loss_val
+
+        # Save combined_stats in a csv file.
+        if file_path is not None:
+            exists = os.path.exists(file_path)
+            with open(file_path, 'a') as f:
+                w = csv.DictWriter(f, fieldnames=stats.keys())
+                if not exists:
+                    w.writeheader()
+                w.writerow(stats)
+
+        # Print statistics.
+        if self.verbose >= 1:
+            print("-" * 47)
+            for key in sorted(stats.keys()):
+                val = stats[key]
+                print("| {:<20} | {:<20g} |".format(key, val))
+            print("-" * 47)
+            print('')
 
     def save(self, save_path):
         """FIXME

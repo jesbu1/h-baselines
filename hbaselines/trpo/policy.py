@@ -68,7 +68,7 @@ class FeedForwardPolicy(object):
             If the policy is reusable or not
         layers : list of int
             The size of the Neural network for the policy (if None, default to
-            [64, 64])
+            [256, 256])
         act_fun : tf.nn.*
             the activation function to use in the neural network.
         shared : bool
@@ -82,7 +82,7 @@ class FeedForwardPolicy(object):
         self.ob_space = ob_space
         self.ac_space = ac_space
         self.reuse = reuse
-        self.layers = layers or [64, 64]
+        self.layers = layers or [256, 256]
         self.act_fun = act_fun
         self.shared = shared
         self.duel_vf = duel_vf

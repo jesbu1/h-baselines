@@ -1,19 +1,13 @@
 """Script containing the TRPO algorithm object."""
-import time
-from collections import deque
-import os
-import csv
-
 import gym
 import tensorflow as tf
 import numpy as np
 
 import stable_baselines.common.tf_util as tf_util
-from stable_baselines.common import explained_variance, zipsame, dataset
+from stable_baselines.common import zipsame, dataset
 from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.cg import conjugate_gradient
 from hbaselines.trpo.algorithm import RLAlgorithm
-from hbaselines.trpo.utils import add_vtarg_and_adv
 
 try:
     from flow.utils.registry import make_create_env
@@ -46,12 +40,6 @@ class TRPO(RLAlgorithm):
         the value function stepsize
     vf_iters : int
         the value function's number iterations for learning
-    graph : TODO
-        TODO
-    sess : TODO
-        TODO
-    policy_pi : TODO
-        TODO
     loss_names : TODO
         TODO
     assign_old_eq_new : TODO
@@ -75,18 +63,6 @@ class TRPO(RLAlgorithm):
     params : TODO
         TODO
     summary : TODO
-        TODO
-    len_buffer : TODO
-        TODO
-    reward_buffer : TODO
-        TODO
-    episodes_so_far : TODO
-        TODO
-    timesteps_so_far : TODO
-        TODO
-    iters_so_far : TODO
-        TODO
-    num_timesteps : TODO
         TODO
     """
 
@@ -136,13 +112,11 @@ class TRPO(RLAlgorithm):
         policy_kwargs : dict
             additional arguments to be passed to the policy on creation
         """
-        super(TRPO, self).__init__(policy, env, timesteps_per_batch, verbose,
-                                   policy_kwargs)
+        super(TRPO, self).__init__(policy, env, timesteps_per_batch, gamma,
+                                   lam, verbose, policy_kwargs)
 
         self.cg_iters = cg_iters
         self.cg_damping = cg_damping
-        self.gamma = gamma
-        self.lam = lam
         self.max_kl = max_kl
         self.vf_iters = vf_iters
         self.vf_stepsize = vf_stepsize
@@ -160,19 +134,6 @@ class TRPO(RLAlgorithm):
         self.reward_giver = None
         self.params = None
         self.summary = None
-
-        # rolling buffer for episode lengths
-        self.len_buffer = deque(maxlen=40)
-        # rolling buffer for episode rewards
-        self.reward_buffer = deque(maxlen=40)
-        # TODO
-        self.episodes_so_far = 0
-        # TODO
-        self.timesteps_so_far = 0
-        # TODO
-        self.iters_so_far = 0
-        # TODO
-        self.num_timesteps = 0
 
         # Perform the algorithm-specific model setup procedure.
         self.setup_model()
@@ -314,7 +275,6 @@ class TRPO(RLAlgorithm):
         # ------------------ Update G ------------------
         print("Optimizing Policy...")
         mean_losses = None
-        add_vtarg_and_adv(seg, self.gamma, self.lam)
         atarg, tdlamret = seg["adv"], seg["tdlamret"]
 
         # predicted value function before update
@@ -332,7 +292,7 @@ class TRPO(RLAlgorithm):
         self.assign_old_eq_new(sess=self.sess)
 
         with self.timed("computegrad"):
-            steps = self.num_timesteps + seg["total_timestep"]
+            steps = self.timesteps_so_far + seg["total_timestep"]
             run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
             # run loss backprop with summary, and save the metadata
             # (memory, compute time, ...)
@@ -406,58 +366,3 @@ class TRPO(RLAlgorithm):
                     self.vfadam.update(grad, self.vf_stepsize)
 
         return mean_losses, vpredbefore, tdlamret
-
-    def _log_training(self,
-                      t_start,
-                      file_path,
-                      seg,
-                      mean_losses,
-                      vpredbefore,
-                      tdlamret):
-        """See parent class."""
-        lens, rews = seg["ep_lens"], seg["ep_rets"]
-        current_it_timesteps = seg["total_timestep"]
-
-        self.len_buffer.extend(lens)
-        self.reward_buffer.extend(rews)
-        self.episodes_so_far += len(lens)
-        self.timesteps_so_far += current_it_timesteps
-        self.num_timesteps += current_it_timesteps
-        self.iters_so_far += 1
-
-        stats = {
-            "episode_steps": np.mean(lens),
-            "mean_return_history": np.mean(self.reward_buffer),
-            "mean_return": np.mean(rews),
-            "max_return": max(rews, default=0),
-            "min_return": min(rews, default=0),
-            "std_return": np.std(rews),
-            "episodes_this_itr": len(lens),
-            "episodes_total": self.episodes_so_far,
-            "steps": self.num_timesteps,
-            "epoch": self.iters_so_far,
-            "duration": time.time() - t_start,
-            "steps_per_second": self.timesteps_so_far / (time.time()-t_start),
-            # TODO: what is this?
-            "explained_variance": explained_variance(vpredbefore, tdlamret),
-        }
-        for (loss_name, loss_val) in zip(self.loss_names, mean_losses):
-            stats[loss_name] = loss_val
-
-        # Save combined_stats in a csv file.
-        if file_path is not None:
-            exists = os.path.exists(file_path)
-            with open(file_path, 'a') as f:
-                w = csv.DictWriter(f, fieldnames=stats.keys())
-                if not exists:
-                    w.writeheader()
-                w.writerow(stats)
-
-        # Print statistics.
-        if self.verbose >= 1:
-            print("-" * 47)
-            for key in sorted(stats.keys()):
-                val = stats[key]
-                print("| {:<20} | {:<20g} |".format(key, val))
-            print("-" * 47)
-            print('')
