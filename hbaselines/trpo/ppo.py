@@ -35,8 +35,6 @@ class PPO(RLAlgorithm):
         discount factor
     lam : float
         advantage estimation
-    adam_epsilon : float
-        the epsilon value for the adam optimizer
     schedule : str
         The type of scheduler for the learning rate update ('linear',
         'constant', 'double_linear_con', 'middle_drop' or 'double_middle_drop')
@@ -68,13 +66,13 @@ class PPO(RLAlgorithm):
                  timesteps_per_batch=2048,
                  clip_param=0.2,
                  entcoeff=0.01,
-                 optim_epochs=4,
+                 optim_epochs=10,
                  optim_stepsize=3e-4,
-                 optim_batchsize=128,
+                 optim_batchsize=64,
                  lam=0.95,
-                 adam_epsilon=1e-5,
                  schedule='constant',
                  verbose=0,
+                 ignore_dones=False,
                  policy_kwargs=None):
         """Initialize the algorithm.
 
@@ -100,8 +98,6 @@ class PPO(RLAlgorithm):
             discount factor
         lam : float
             advantage estimation
-        adam_epsilon : float
-            the epsilon value for the adam optimizer
         schedule : str
             The type of scheduler for the learning rate update ('linear',
             'constant', 'double_linear_con', 'middle_drop' or
@@ -112,15 +108,20 @@ class PPO(RLAlgorithm):
         policy_kwargs : dict
             additional arguments to be passed to the policy on creation
         """
-        super(PPO, self).__init__(policy, env, timesteps_per_batch, gamma, lam,
-                                  verbose, policy_kwargs)
+        super(PPO, self).__init__(policy=policy,
+                                  env=env,
+                                  timesteps_per_batch=timesteps_per_batch,
+                                  gamma=gamma,
+                                  lam=lam,
+                                  ignore_dones=ignore_dones,
+                                  verbose=verbose,
+                                  policy_kwargs=policy_kwargs)
 
         self.clip_param = clip_param
         self.entcoeff = entcoeff
         self.optim_epochs = optim_epochs
         self.optim_stepsize = optim_stepsize
         self.optim_batchsize = optim_batchsize
-        self.adam_epsilon = adam_epsilon
         self.schedule = schedule
 
         self.atarg = None
@@ -213,10 +214,28 @@ class PPO(RLAlgorithm):
                     ratio, 1.0 - clip_param, 1.0 + clip_param) * self.atarg
 
                 # PPO's pessimistic surrogate (L^CLIP)
-                pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2))
-                vf_loss = tf.reduce_mean(
-                    tf.square(self.policy_pi.value_flat - self.ret))
-                total_loss = pol_surr + pol_entpen + vf_loss
+                if self.duel_vf:
+                    vf1, vf2 = self.policy_pi.value_flat
+                    vf_loss = tf.reduce_mean(tf.square(vf1 - self.ret)) \
+                        + tf.reduce_mean(tf.square(vf2 - self.ret))
+                    pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2))
+                    total_loss = pol_surr + pol_entpen
+
+                    # create an optimizer object
+                    optimizer = tf.compat.v1.train.AdamOptimizer(
+                        10 * self.optim_stepsize * self.lrmult)
+
+                    # create the optimization operation
+                    self.vf_optimizer = optimizer.minimize(
+                        vf_loss,
+                        var_list=tf_util.get_trainable_vars("model")
+                        # + tf_util.get_trainable_vars("model/vf2")
+                    )
+                else:
+                    pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2))
+                    vf_loss = tf.reduce_mean(
+                        tf.square(self.policy_pi.value_flat - self.ret))
+                    total_loss = pol_surr + pol_entpen + vf_loss
                 self.losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
                 self.loss_names = ["pol_surr", "pol_entpen", "vf_loss", "kl",
                                    "ent"]
@@ -233,10 +252,17 @@ class PPO(RLAlgorithm):
                 optimizer = tf.compat.v1.train.AdamOptimizer(
                     self.optim_stepsize * self.lrmult)
 
+                if self.duel_vf:
+                    var_list = tf_util.get_trainable_vars("model")
+                    print(tf_util.get_trainable_vars("model"))
+                else:
+                    var_list = tf_util.get_trainable_vars("model")
+                    print(tf_util.get_trainable_vars("model"))
+
                 # create the optimization operation
                 self.optimizer = optimizer.minimize(
                     total_loss,
-                    var_list=tf_util.get_trainable_vars("model")
+                    var_list=var_list
                 )
 
         return tf_util.get_trainable_vars("model")
@@ -283,17 +309,31 @@ class PPO(RLAlgorithm):
                          k * optim_batchsize +
                          int(i * (optim_batchsize / len(dataset.data_map))))
                 # Run loss backprop with summary.
-                summary, grad, *newlosses = self.sess.run(
-                    [self.summary, self.optimizer] + self.losses,
-                    feed_dict={
-                        self.policy_pi.obs_ph: batch["ob"],
-                        self.old_pi.obs_ph: batch["ob"],
-                        self.action_ph: batch["ac"],
-                        self.atarg: batch["atarg"],
-                        self.ret: batch["vtarg"],
-                        self.lrmult: cur_lrmult,
-                    }
-                )
+                if self.duel_vf:
+                    summary, vf_grad, grad, *newlosses = self.sess.run(
+                        [self.summary, self.vf_optimizer, self.optimizer]
+                        + self.losses,
+                        feed_dict={
+                            self.policy_pi.obs_ph: batch["ob"],
+                            self.old_pi.obs_ph: batch["ob"],
+                            self.action_ph: batch["ac"],
+                            self.atarg: batch["atarg"],
+                            self.ret: batch["vtarg"],
+                            self.lrmult: cur_lrmult,
+                        }
+                    )
+                else:
+                    summary, grad, *newlosses = self.sess.run(
+                        [self.summary,  self.optimizer] + self.losses,
+                        feed_dict={
+                            self.policy_pi.obs_ph: batch["ob"],
+                            self.old_pi.obs_ph: batch["ob"],
+                            self.action_ph: batch["ac"],
+                            self.atarg: batch["atarg"],
+                            self.ret: batch["vtarg"],
+                            self.lrmult: cur_lrmult,
+                        }
+                    )
                 writer.add_summary(summary, steps)  # TODO: out of loop?
                 losses.append(newlosses)
             print(fmt_row(13, np.mean(losses, axis=0)))

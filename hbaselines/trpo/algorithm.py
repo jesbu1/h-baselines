@@ -1,5 +1,6 @@
 """Script containing the TRPO algorithm object."""
 import numpy as np
+# import json
 import csv
 import os
 import time
@@ -16,6 +17,20 @@ try:
     from flow.utils.registry import make_create_env
 except (ImportError, ModuleNotFoundError):
     pass
+
+
+DEFAULT_POLICY_KWARGS = dict(
+    # The size of the Neural network for the policy
+    layers=[64, 64],
+    # the activation function to use in the neural network.
+    act_fun=tf.nn.tanh,
+    # specifies whether to shared the hidden layers between the actor and
+    # critic
+    shared=True,
+    # specifies whether to create two value functions. If not, only one is
+    # created.
+    duel_vf=False,
+)
 
 
 class RLAlgorithm(object):
@@ -69,6 +84,7 @@ class RLAlgorithm(object):
                  timesteps_per_batch,
                  gamma,
                  lam,
+                 ignore_dones=False,
                  verbose=0,
                  policy_kwargs=None):
         """Instantiate the algorithm.
@@ -98,8 +114,11 @@ class RLAlgorithm(object):
         self.timesteps_per_batch = timesteps_per_batch
         self.gamma = gamma
         self.lam = lam
+        self.ignore_dones = ignore_dones
         self.verbose = verbose
-        self.policy_kwargs = policy_kwargs or {}
+        self.policy_kwargs = DEFAULT_POLICY_KWARGS.copy()
+        self.policy_kwargs.update(policy_kwargs or {})
+        self.duel_vf = self.policy_kwargs["duel_vf"]
 
         # some variables used during the logging procedure
         self.len_buffer = deque(maxlen=40)
@@ -202,6 +221,10 @@ class RLAlgorithm(object):
         # file path for training statistics
         train_filepath = os.path.join(log_dir, "train.csv")
 
+        # # Save the hypeparameters to a json file.
+        # with open(os.path.join(log_dir, "hyperparameters.json"), "w") as f:
+        #     json.dump(self.__dict__, f, sort_keys=True, indent=4)
+
         # Set all relevant seeds.
         tf.set_random_seed(seed)
         np.random.seed(seed)
@@ -219,7 +242,8 @@ class RLAlgorithm(object):
                 # Collect samples.
                 with self.timed("Sampling"):
                     seg = self._collect_samples(self.timesteps_per_batch)
-                    self._add_vtarg_and_adv(seg, self.gamma, self.lam)
+                    self._add_vtarg_and_adv(seg, self.gamma, self.lam,
+                                            self.ignore_dones)
 
                 # Perform the training procedure.
                 mean_losses, vpredbefore, tdlamret = self._train(
@@ -347,6 +371,13 @@ class RLAlgorithm(object):
             # Compute the predictions of the value function.
             vpred = self.policy_pi.value([observations[step]])
             next_vpred = self.policy_pi.value([next_observations[step]])
+
+            # In case of duel value functions, we use the output from the first
+            # value function.  # TODO: maybe iteratively swap?
+            if self.duel_vf:
+                vpred = vpred[0]
+                next_vpred = next_vpred[0]
+
             seg["vpred"][step] = vpred
 
             # Compute the next step advantage
@@ -358,12 +389,29 @@ class RLAlgorithm(object):
         seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
     def _train(self, seg, writer, total_timesteps):
-        """TODO
+        """Perform a training step.
 
-        :param seg:
-        :param writer:
-        :param total_timesteps:  FIXME: remove?
-        :return:
+        To be implemented by the inheriting algorithms.
+
+        Parameters
+        ----------
+        seg : dict
+            the current segment of the trajectory (see _collect_samples return
+            for more information)
+        writer : TODO
+            TODO
+        total_timesteps : int
+            the total number of samples to train on. Used when, for example,
+            performing learning rate annealing.
+
+        Returns
+        -------
+        TODO
+            TODO
+        TODO
+            TODO
+        TODO
+            TODO
         """
         raise NotImplementedError
 
@@ -374,15 +422,25 @@ class RLAlgorithm(object):
                       mean_losses,
                       vpredbefore,
                       tdlamret):
-        """TODO
+        """Log training statistics.
 
-        :param t_start:
-        :param file_path:
-        :param seg:
-        :param mean_losses:
-        :param vpredbefore:
-        :param tdlamret:
-        :return:
+        Parameters
+        ----------
+        t_start : float
+            the time when training began. This is used to print the total
+            training time.
+        file_path : str
+            the list of cumulative rewards from every episode in the evaluation
+            phase
+        seg : dict
+            the current segment of the trajectory (see _collect_samples return
+            for more information)
+        mean_losses : TODO
+            TODO
+        vpredbefore : TODO
+            TODO
+        tdlamret : TODO
+            TODO
         """
         lens, rews = seg["ep_lens"], seg["ep_rets"]
         current_it_timesteps = seg["total_timestep"]
@@ -412,7 +470,7 @@ class RLAlgorithm(object):
         for (loss_name, loss_val) in zip(self.loss_names, mean_losses):
             stats[loss_name] = loss_val
 
-        # Save combined_stats in a csv file.
+        # Save combined stats in a csv file.
         if file_path is not None:
             exists = os.path.exists(file_path)
             with open(file_path, 'a') as f:

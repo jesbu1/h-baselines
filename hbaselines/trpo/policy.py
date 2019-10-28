@@ -49,12 +49,11 @@ class FeedForwardPolicy(object):
                  sess,
                  ob_space,
                  ac_space,
-                 reuse=False,
-                 layers=None,
-                 act_fun=tf.nn.relu,
-                 bounded_mean=False,
-                 shared=True,
-                 duel_vf=False):
+                 layers,
+                 act_fun,
+                 shared,
+                 duel_vf,
+                 reuse=False):
         """Instantiate the policy.
 
         Parameters
@@ -68,14 +67,9 @@ class FeedForwardPolicy(object):
         reuse : bool
             If the policy is reusable or not
         layers : list of int
-            The size of the Neural network for the policy (if None, default to
-            [256, 256])
+            The size of the Neural network for the policy
         act_fun : tf.nn.*
             the activation function to use in the neural network.
-        bounded_mean : bool
-            specifies whether to bind the mean of the actor policy by the
-            action space. This is done by introducing a tanh nonlinearity to
-            the output layer and then scaling it by the action space.
         shared : bool
             specifies whether to shared the hidden layers between the actor and
             critic
@@ -87,9 +81,8 @@ class FeedForwardPolicy(object):
         self.ob_space = ob_space
         self.ac_space = ac_space
         self.reuse = reuse
-        self.layers = layers or [256, 256]
+        self.layers = layers
         self.act_fun = act_fun
-        self.bounded_mean = bounded_mean
         self.shared = shared
         self.duel_vf = duel_vf
 
@@ -317,14 +310,7 @@ class FeedForwardPolicy(object):
 
         # Add an extra layer after the shared layers to produce the mean action
         # by the actor.
-        activ = tf.nn.tanh if self.bounded_mean else None
-        mean = self._layer(pi_latent, self.ac_space.shape[0], 'pi_mean', activ)
-
-        # Scale the mean to match the action space, if requested.
-        if self.bounded_mean:
-            action_mean = 0.5 * (self.ac_space.high + self.ac_space.low)
-            action_magnitude = 0.5 * (self.ac_space.high - self.ac_space.low)
-            mean = mean * action_magnitude + action_mean
+        mean = self._layer(pi_latent, self.ac_space.shape[0], 'pi_mean', None)
 
         # The logstd is a single trainable variable.
         logstd = tf.get_variable(
