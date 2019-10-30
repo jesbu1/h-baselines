@@ -2,10 +2,37 @@ import gym
 import tensorflow as tf
 import numpy as np
 
-from stable_baselines.common import Dataset, fmt_row, zipsame
-import stable_baselines.common.tf_util as tf_util
-from stable_baselines.common.mpi_moments import mpi_moments
+import hbaselines.trpo.tf_utils as tf_util
+from hbaselines.trpo.utils import fmt_row
+from hbaselines.trpo.dataset import Dataset
 from hbaselines.trpo.algorithm import RLAlgorithm
+
+import tensorflow_probability as tfp
+
+tfco = tf.contrib.constrained_optimization
+tfd = tfp.distributions
+
+
+class KLProblem(tfco.ConstrainedMinimizationProblem):
+    """Creat a constraint minimization problem.
+
+    Parameters:
+    -----------
+
+    """
+
+    def __init__(self, loss, meankl, kl_bound):
+        self.loss = loss
+        self.meankl = meankl
+        self.kl_bound = kl_bound
+
+    @property
+    def objective(self):
+        return self.loss
+
+    @property
+    def constraints(self):
+        return self.meankl - self.kl_bound
 
 
 class PPO(RLAlgorithm):
@@ -184,12 +211,16 @@ class PPO(RLAlgorithm):
                     **self.policy_kwargs
                 )
 
+            # Make sure the global variables of the old and new policy match.
+            assert len(tf_util.get_globals_vars("oldpi")) \
+                == len(tf_util.get_globals_vars("model"))
+
             # A utility function that is used to assign the parameters of
             # the new policy to the old policy. Done after every update.
             self.assign_old_eq_new = [
                 tf.assign(oldv, newv) for (oldv, newv) in
-                zipsame(tf_util.get_globals_vars("oldpi"),
-                        tf_util.get_globals_vars("model"))
+                zip(tf_util.get_globals_vars("oldpi"),
+                    tf_util.get_globals_vars("model"))
             ]
 
             with tf.variable_scope("loss", reuse=False):
@@ -221,21 +252,44 @@ class PPO(RLAlgorithm):
                     pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2))
                     total_loss = pol_surr + pol_entpen
 
+                    problem = KLProblem(total_loss, meankl, 0.01)
+
+                    optimizer = tfco.AdditiveExternalRegretOptimizer(
+                        optimizer=tf.train.AdamOptimizer(
+                            learning_rate=self.optim_stepsize,
+                            epsilon=1e-5,
+                        )
+                    )
+                    self.optimizer = optimizer.minimize(
+                        problem,
+                        var_list=tf_util.get_trainable_vars("model")
+                    )
+
                     # create an optimizer object
                     optimizer = tf.compat.v1.train.AdamOptimizer(
-                        10 * self.optim_stepsize * self.lrmult)
+                        self.optim_stepsize * self.lrmult, epsilon=1e-5)
 
                     # create the optimization operation
                     self.vf_optimizer = optimizer.minimize(
                         vf_loss,
                         var_list=tf_util.get_trainable_vars("model")
-                        # + tf_util.get_trainable_vars("model/vf2")
                     )
                 else:
                     pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2))
                     vf_loss = tf.reduce_mean(
                         tf.square(self.policy_pi.value_flat - self.ret))
                     total_loss = pol_surr + pol_entpen + vf_loss
+
+                    with tf.variable_scope("Adam_mpi", reuse=False):
+                        # create an optimizer object
+                        optimizer = tf.compat.v1.train.AdamOptimizer(
+                            self.optim_stepsize * self.lrmult, epsilon=1e-5)
+
+                        # create the optimization operation
+                        self.optimizer = optimizer.minimize(
+                            total_loss,
+                            var_list=tf_util.get_trainable_vars("model")
+                        )
                 self.losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
                 self.loss_names = ["pol_surr", "pol_entpen", "vf_loss", "kl",
                                    "ent"]
@@ -246,24 +300,6 @@ class PPO(RLAlgorithm):
                 tf.summary.scalar('approximate_kullback-leibler', meankl)
                 tf.summary.scalar('clip_factor', clip_param)
                 tf.summary.scalar('loss', total_loss)
-
-            with tf.variable_scope("Adam_mpi", reuse=False):
-                # create an optimizer object
-                optimizer = tf.compat.v1.train.AdamOptimizer(
-                    self.optim_stepsize * self.lrmult)
-
-                if self.duel_vf:
-                    var_list = tf_util.get_trainable_vars("model")
-                    print(tf_util.get_trainable_vars("model"))
-                else:
-                    var_list = tf_util.get_trainable_vars("model")
-                    print(tf_util.get_trainable_vars("model"))
-
-                # create the optimization operation
-                self.optimizer = optimizer.minimize(
-                    total_loss,
-                    var_list=var_list
-                )
 
         return tf_util.get_trainable_vars("model")
 
@@ -354,6 +390,6 @@ class PPO(RLAlgorithm):
                 }
             )
             losses.append(newlosses)
-        mean_losses, _, _ = mpi_moments(losses, axis=0)
+        mean_losses = np.mean(losses, axis=0)
 
         return mean_losses, vpredbefore, tdlamret

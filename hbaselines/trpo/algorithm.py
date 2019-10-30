@@ -10,8 +10,7 @@ import random
 import gym
 from gym.spaces import Box
 import tensorflow as tf
-from stable_baselines.common import colorize, explained_variance
-from hbaselines.common.utils import ensure_dir
+from hbaselines.trpo.utils import colorize, explained_variance, ensure_dir
 
 try:
     from flow.utils.registry import make_create_env
@@ -321,7 +320,7 @@ class RLAlgorithm(object):
             cur_ep_ret += reward
             current_ep_len += 1
 
-            if done:
+            if done or current_ep_len == 500:
                 ep_rets.append(cur_ep_ret)
                 ep_lens.append(current_ep_len)
                 cur_ep_ret = 0
@@ -375,8 +374,8 @@ class RLAlgorithm(object):
             # In case of duel value functions, we use the output from the first
             # value function.  # TODO: maybe iteratively swap?
             if self.duel_vf:
-                vpred = vpred[0]
-                next_vpred = next_vpred[0]
+                vpred = min(vpred)#[0]
+                next_vpred = min(next_vpred)#[0]
 
             seg["vpred"][step] = vpred
 
