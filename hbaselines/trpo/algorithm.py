@@ -4,6 +4,7 @@ import numpy as np
 import csv
 import os
 import time
+from copy import deepcopy
 from contextlib import contextmanager
 from collections import deque
 import random
@@ -368,14 +369,21 @@ class RLAlgorithm(object):
         lastgaelam = 0
         for step in reversed(range(seg_len)):
             # Compute the predictions of the value function.
+            if step == seg_len-1 or dones[step]:
+                # next observation is now the same and the first step
+                # observation seen in the next sample, so compute the next
+                # step value estimate in this case.
+                next_vpred = self.policy_pi.value([next_observations[step]])
+            else:
+                next_vpred = deepcopy(vpred)
             vpred = self.policy_pi.value([observations[step]])
-            next_vpred = self.policy_pi.value([next_observations[step]])
 
             # In case of duel value functions, we use the output from the first
             # value function.  # TODO: maybe iteratively swap?
             if self.duel_vf:
-                vpred = min(vpred)#[0]
-                next_vpred = min(next_vpred)#[0]
+                if step == seg_len-1 or dones[step]:
+                    next_vpred = min(next_vpred)
+                vpred = min(vpred)
 
             seg["vpred"][step] = vpred
 
