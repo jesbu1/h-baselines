@@ -17,6 +17,7 @@ import random
 import numpy as np
 import tensorflow as tf
 import math
+import time
 from collections import deque
 from copy import deepcopy
 from gym.spaces import Box
@@ -41,7 +42,7 @@ TD3_PARAMS = dict(
     # scaling term to the range of the action space, that is subsequently used
     # as the standard deviation of Gaussian noise added to the action if
     # `apply_noise` is set to True in `get_action`
-    noise=0.1,
+    noise=1.0,
     # standard deviation term to the noise from the output of the target actor
     # policy. See TD3 paper for more.
     target_policy_noise=0.2,
@@ -81,7 +82,7 @@ FEEDFORWARD_PARAMS = dict(
     # enable layer normalisation
     layer_norm=False,
     # the size of the neural network for the policy
-    layers=[256, 256],
+    layers=[256, 256, 256],
     # the activation function to use in the neural network
     act_fun=tf.nn.relu,
     # specifies whether to use the huber distance function as the loss for the
@@ -342,7 +343,7 @@ class OffPolicyRLAlgorithm(object):
             "num_envs must be less than or equal to nb_rollout_steps"
 
         # Instantiate the ray instance.
-        ray.init(num_cpus=num_envs+1, ignore_reinit_error=True)
+        ray.init(num_cpus=num_envs+1, ignore_reinit_error=True, include_webui=False)
 
         self.policy = policy
         self.env_name = deepcopy(env) if isinstance(env, str) \
@@ -645,7 +646,7 @@ class OffPolicyRLAlgorithm(object):
 
         # file path for training and evaluation results
         train_filepath = os.path.join(log_dir, "train.csv")
-        eval_filepath = os.path.join(log_dir, "eval.csv")
+        eval_filepath = os.path.join(log_dir, "progress.csv")
 
         # Setup the seed value.
         random.seed(seed)
@@ -659,7 +660,7 @@ class OffPolicyRLAlgorithm(object):
         eval_steps_incr = 0
         save_steps_incr = 0
         start_time = time.time()
-
+        log_interval = self.nb_rollout_steps
         with self.sess.as_default(), self.graph.as_default():
             # Collect preliminary random samples.
             print("Collecting initial exploration samples...")
@@ -667,18 +668,17 @@ class OffPolicyRLAlgorithm(object):
                                   run_steps=initial_exploration_steps,
                                   random_actions=True)
             print("Done!")
-
             # Reset total statistics variables.
             self.episodes = 0
             self.total_steps = 0
             self.episode_rew_history = deque(maxlen=100)
-
             while True:
                 # Reset epoch-specific variables.
                 self.epoch_episodes = 0
                 self.epoch_episode_steps = []
                 self.epoch_episode_rewards = []
-
+                
+                self._reset_obs()
                 for _ in range(round(log_interval / self.nb_rollout_steps)):
                     # If the requirement number of time steps has been met,
                     # terminate training.
@@ -687,7 +687,6 @@ class OffPolicyRLAlgorithm(object):
 
                     # Perform rollouts.
                     self._collect_samples(total_steps)
-
                     # Train.
                     self._train()
 
@@ -724,7 +723,8 @@ class OffPolicyRLAlgorithm(object):
 
                     # Check if td_map is empty.
                     if not td_map:
-                        break
+                        self.epoch += 1
+                        continue
 
                     td_map.update({
                         self.rew_ph: np.mean(self.epoch_episode_rewards),
@@ -760,6 +760,10 @@ class OffPolicyRLAlgorithm(object):
             location of the checkpoint
         """
         self.saver.restore(self.sess, load_path)
+    
+    def _reset_obs(self):
+        self.obs = ray.get([self.sampler[env_num].reset.remote() for env_num in range(self.num_envs)])
+        self.episode_step = [0 for _ in range(self.num_envs)]
 
     def _collect_samples(self,
                          total_steps,
@@ -1159,7 +1163,9 @@ class OffPolicyRLAlgorithm(object):
             if file_path is not None:
                 # Add an evaluation number to the csv file in case of multiple
                 # evaluation environments.
-                eval_fp = file_path[:-4] + "_{}.csv".format(i)
+                assert i == 0
+                #eval_fp = file_path[:-4] + "_{}.csv".format(i)
+                eval_fp = file_path[:-4] + ".csv"
                 exists = os.path.exists(eval_fp)
 
                 # Save evaluation statistics in a csv file.

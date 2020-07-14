@@ -9,6 +9,7 @@ from hbaselines.utils.tf_util import get_trainable_vars
 from hbaselines.utils.tf_util import reduce_std
 from hbaselines.utils.tf_util import gaussian_likelihood
 from hbaselines.utils.tf_util import apply_squashing_func
+from hbaselines.utils.tf_util import apply_squashing_func_2
 from hbaselines.utils.tf_util import print_params_shape
 
 
@@ -394,9 +395,9 @@ class FeedForwardPolicy(ActorCriticPolicy):
         logp_ac = gaussian_likelihood(action, policy_mean, log_std)
 
         # Apply squashing and account for it in the probability
-        _, _, logp_ac = apply_squashing_func(
+        _, _, logp_ac = apply_squashing_func_2(
             policy_mean, action, logp_ac)
-        deterministic_policy, policy, logp_pi = apply_squashing_func(
+        deterministic_policy, policy, logp_pi = apply_squashing_func_2(
             policy_mean, policy, logp_pi)
 
         return deterministic_policy, policy, logp_pi, logp_ac
@@ -526,7 +527,6 @@ class FeedForwardPolicy(ActorCriticPolicy):
         # Not enough samples in the replay buffer.
         if not self.replay_buffer.can_sample():
             return [0, 0], 0
-
         # Get a batch
         obs0, actions, rewards, obs1, done1 = self.replay_buffer.sample()
 
@@ -746,6 +746,12 @@ class FeedForwardPolicy(ActorCriticPolicy):
         names += ['{}/reference_log_probability_mean'.format(base)]
         ops += [reduce_std(self.logp_pi)]
         names += ['{}/reference_log_probability_std'.format(base)]
+        
+        ops += [tf.reduce_mean(tf.math.exp(self.log_alpha))]
+        names += ['{}/reference_alpha'.format(base)]
+        
+        ops += [tf.reduce_mean(self.rew_ph)]
+        names += ['{}/reference_rewards'.format(base)]
 
         # Add all names and ops to the tensorboard summary.
         for op, name in zip(ops, names):

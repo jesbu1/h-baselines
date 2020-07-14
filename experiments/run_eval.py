@@ -108,7 +108,7 @@ def get_hyperparameters_from_dir(ckpt_path):
         the seed value
     """
     # import the dictionary of hyperparameters
-    with open(os.path.join(ckpt_path, 'hyperparameters.json'), 'r') as f:
+    with open(os.path.join(ckpt_path, 'variant.json'), 'r') as f:
         hp = json.load(f)
 
     # collect the policy object

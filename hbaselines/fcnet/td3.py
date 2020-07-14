@@ -507,7 +507,6 @@ class FeedForwardPolicy(ActorCriticPolicy):
         # Not enough samples in the replay buffer.
         if not self.replay_buffer.can_sample():
             return [0, 0], 0
-
         # Get a batch
         obs0, actions, rewards, obs1, terminals1 = self.replay_buffer.sample()
 
@@ -581,7 +580,6 @@ class FeedForwardPolicy(ActorCriticPolicy):
         """See parent class."""
         # Add the contextual observation, if applicable.
         obs = self._get_obs(obs, context, axis=1)
-
         if random_actions:
             action = np.array([self.ac_space.sample()])
         else:
@@ -652,6 +650,9 @@ class FeedForwardPolicy(ActorCriticPolicy):
         names += ['{}/reference_action_mean'.format(base)]
         ops += [reduce_std(self.actor_tf)]
         names += ['{}/reference_action_std'.format(base)]
+        
+        ops += [tf.reduce_mean(self.rew_ph)]
+        names += ['{}/reference_rewards'.format(base)]
 
         # Add all names and ops to the tensorboard summary.
         for op, name in zip(ops, names):

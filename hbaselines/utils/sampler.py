@@ -82,15 +82,22 @@ class Sampler(object):
         elif hasattr(self.env, "env_params"):
             # for Flow environments
             return self.env.env_params.horizon
+        elif hasattr(self.env, "env"):
+            return self.env.env._max_episode_steps
         else:
             raise ValueError("Horizon attribute not found.")
-
+        
+    def reset(self):
+        obs = self.env.reset() 
+        return obs
+        
     def collect_sample(self,
                        action,
                        multiagent,
                        steps,
                        total_steps,
-                       use_fingerprints):
+                       use_fingerprints,
+                       ):
         """Perform the sample collection operation over a single step.
 
         This method is responsible for executing a single step of the

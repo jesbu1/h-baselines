@@ -78,5 +78,4 @@ def negative_distance(states,
 
     bonus = float(dist < bonus_epsilon)
     dist *= reward_scales
-
     return bonus + offset - dist

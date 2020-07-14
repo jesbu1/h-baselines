@@ -502,7 +502,6 @@ class GoalConditionedPolicy(ActorCriticPolicy):
         # sampling procedure. Since only a subset of algorithms use additional
         # data, removing it can speedup the other algorithms.
         with_additional = self.off_policy_corrections
-
         # Get a batch.
         obs0, obs1, act, rew, done, additional = self.replay_buffer.sample(
             with_additional)

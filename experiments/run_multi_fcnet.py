@@ -107,7 +107,7 @@ def main(args, base_dir):
         params_with_extra['date/time'] = now
 
         # Add the hyperparameters to the folder.
-        with open(os.path.join(dir_name, 'hyperparameters.json'), 'w') as f:
+        with open(os.path.join(dir_name, 'variant.json'), 'w') as f:
             json.dump(params_with_extra, f, sort_keys=True, indent=4)
 
         run_exp(

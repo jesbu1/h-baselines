@@ -13,11 +13,12 @@ from hbaselines.envs.efficient_hrl.envs import AntFall
 from hbaselines.envs.efficient_hrl.envs import AntPush
 from hbaselines.envs.efficient_hrl.envs import AntFourRooms
 from hbaselines.envs.hac.envs import UR5, Pendulum
-
 try:
     from hbaselines.envs.snn4hrl.envs import AntGatherEnv
 except (ImportError, ModuleNotFoundError):
-    pass
+    print("couldn't import gather env")
+from hbaselines.envs.efficient_hrl.envs import FetchWrapper, SimpleFetchWrapper
+from gym.wrappers import FlattenDictWrapper
 
 try:
     import flow.config as config
@@ -57,6 +58,23 @@ except (ImportError, ModuleNotFoundError):
 #   the Worker's state space
 # - env: a lambda term that takes an input (evaluate, render, multiagent,
 #   shared, maddpg) and return an environment or list of environments
+
+# Fetch stuff: 
+# grip_pos (3), object_pos (), object_rel_pos (), gripper_state (2), obj_rot (),
+# obj_velp (), object_velr (), grip_velp (3), gripper_vel (2)
+
+grip_pos_change = [1, 1, 1]
+gripper_state_change = [1, 1]
+gripper_velp_change = [1, 1, 1]
+
+reach_initial_gripper_xpos = np.array([1.34183226, 0.74910038, 0.53472284])
+push_initial_gripper_xpos_low = np.array([1.34786948 - 0.15, 0.74894948 - 0.15, 0.42469974945955385])
+push_initial_gripper_xpos_high = np.array([1.34786948 + 0.15, 0.74894948 + 0.15, 0.42469974945955385])
+pick_initial_gripper_xpos_low = np.array([1.34193226 - 0.15, 0.74910037 - 0.15, 0.42469964945955385])
+pick_initial_gripper_xpos_high = np.array([1.34193226 + 0.15, 0.74910037 + 0.15, 0.42469964945955385 + 0.45])
+slide_initial_gripper_xpos_low = np.array([0.99570627 + 0.4 - 0.3, 0.74890684 - 0.3, 0.4140894352053437])
+slide_initial_gripper_xpos_high= np.array([0.99570627 + 0.4 + 0.3, 0.74890684 + 0.3, 0.4140894352053437])
+convert_to_tuple = lambda list_of_arrays: [(list_of_arrays[i], list_of_arrays[i]) for i in range(len(list_of_arrays))]
 ENV_ATTRIBUTES = {
 
     # ======================================================================= #
@@ -103,7 +121,7 @@ ENV_ATTRIBUTES = {
         "state_indices": [i for i in range(15)],
         "env": lambda evaluate, render, multiagent, shared, maddpg: AntPush(
             use_contexts=True,
-            context_range=[0, 19]
+            context_range=[]
         ) if evaluate else AntPush(
             use_contexts=True,
             context_range=[0, 19]
@@ -173,6 +191,73 @@ ENV_ATTRIBUTES = {
             context_range=[[30, 0], [0, 30], [30, 30]]
         ),
     },
+    
+    # ======================================================================= #
+    # Fetch/Hand Environments.                                                #
+    # ======================================================================= #
+    
+    "FetchReach": {
+        "meta_ac_space": lambda relative_goals: Box(
+            low=-np.ones(10)/5,
+            high=np.ones(10)/5,
+            dtype=np.float32,
+        ),
+        "state_indices": [i for i in range(10)],
+        #"env": lambda evaluate, render, multiagent, shared, maddpg: FetchWrapper(
+        #    use_contexts=False,
+        #    env_id="FetchReach",
+        #    context_range=[reach_initial_gripper_xpos - 0.15, reach_initial_gripper_xpos + 0.15],
+        #    random_contexts=True
+        #) 
+        "env": lambda *args : SimpleFetchWrapper("FetchReach"),
+    },
+    
+    "FetchPush": {
+        "meta_ac_space": lambda relative_goals: Box(
+            low=-np.ones(25),
+            high=np.ones(25),
+            dtype=np.float32,
+        ),
+        "state_indices": [i for i in range(25)],
+        #"env": lambda evaluate, render, multiagent, shared, maddpg: FetchWrapper(
+        #    use_contexts=True,
+        #    env_id="FetchPush",
+        #    context_range=[push_initial_gripper_xpos_low, push_initial_gripper_xpos_high],
+        #    random_contexts=True
+        #)
+        "env": lambda *args : SimpleFetchWrapper("FetchPush"),
+    },
+    
+    "FetchPickAndPlace": {
+        "meta_ac_space": lambda relative_goals: Box(
+            low=-np.ones(25),
+            high=np.ones(25),
+            dtype=np.float32,
+        ),
+        "state_indices": [i for i in range(25)],
+        "env": lambda evaluate, render, multiagent, shared, maddpg: FetchWrapper(
+            use_contexts=True,
+            env_id="FetchPickAndPlace",
+            context_range=[pick_initial_gripper_xpos_low, pick_initial_gripper_xpos_high],
+            random_contexts=True
+        )
+    },
+    
+    "FetchSlide": {
+        "meta_ac_space": lambda relative_goals: Box(
+            low=-np.ones(25),
+            high=np.ones(25),
+            dtype=np.float32,
+        ),
+        "state_indices": [i for i in range(25)],
+        "env": lambda evaluate, render, multiagent, shared, maddpg: FetchWrapper(
+            use_contexts=True,
+            env_id="FetchSlide",
+            context_range=[slide_initial_gripper_xpos_low, slide_initial_gripper_xpos_high],
+            random_contexts=True
+        )
+    },
+    
 
     # ======================================================================= #
     # UR5 and Pendulum environments.                                          #
@@ -788,7 +873,7 @@ def create_env(env, render=False, shared=False, maddpg=False, evaluate=False):
         elif env.startswith("flow:"):
             # environments in flow/examples
             env = import_flow_env(env, render, shared, maddpg, evaluate)
-
+        
         else:
             # This is assuming the environment is registered with OpenAI gym.
             env = gym.make(env)

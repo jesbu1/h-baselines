@@ -6,10 +6,14 @@ from gym.spaces import Box
 from hbaselines.utils.reward_fns import negative_distance
 from hbaselines.envs.efficient_hrl.ant_maze_env import AntMazeEnv
 
+import gym
+from gym.wrappers import FlattenDictWrapper
 # scale to the contextual reward. Does not affect the environmental reward.
 REWARD_SCALE = 0.1
+FETCH_REWARD_SCALE = 1.0
 # threshold after which the agent is considered to have reached its target
 DISTANCE_THRESHOLD = 5
+FETCH_DISTANCE_THRESHOLD = 0.05
 
 
 class UniversalAntMazeEnv(AntMazeEnv):
@@ -87,7 +91,8 @@ class UniversalAntMazeEnv(AntMazeEnv):
         self.random_contexts = random_contexts
         self.context_range = context_range
         self.contextual_reward = contextual_reward
-        self.current_context = None
+        if self.use_contexts:
+            self.current_context = None
 
         # a hack to deal with previous observations in the reward
         self.prev_obs = None
@@ -481,3 +486,191 @@ class AntFourRooms(UniversalAntMazeEnv):
             maze_size_scaling=3,
             ant_fall=False,
         )
+
+class FetchWrapper(gym.Wrapper):
+    def __init__(self,
+                 env_id,
+                 contextual_reward=None,
+                 use_contexts=False,
+                 random_contexts=False,
+                 context_range=None,
+                 horizon=50):
+        self.horizon = horizon
+        self.step_number = 0
+        
+        #self.env = FlattenDictWrapper(gym.make(env_id + "-v1"), ['observation', 'desired_goal'])
+        self.env = gym.make(env_id + "-v1")
+        self.action_space = self.env.action_space
+        if use_contexts:
+            self.observation_space = self.env.observation_space['observation']
+        else:
+            self.observation_space = FlattenDictWrapper(self.env, ['observation', 'desired_goal']).observation_space
+        
+        self.prev_obs = None
+        # contextual variables
+        self.use_contexts = use_contexts
+        self.random_contexts = random_contexts
+        self.context_range = context_range
+        if "FetchReach" in env_id:
+            state_indices = [0, 1, 2]
+        elif "FetchPush" in env_id:
+            state_indices = [3, 4, 5]
+        elif "FetchSlide" in env_id:
+            state_indices = [3, 4, 5]
+        elif "FetchPickAndPlace" in env_id:
+            state_indices = [3, 4, 5]
+        def contextual_reward(states, goals, next_states):
+            return negative_distance(
+                states=states,
+                goals=goals,
+                next_states=next_states,
+                state_indices=state_indices,
+                relative_context=False,
+                offset=0.0,
+                reward_scales=REWARD_SCALE
+            )
+        self.contextual_reward = contextual_reward
+
+    def step(self, action):
+        """Advance the environment by one simulation step.
+
+        If the environment is using the contextual setting, an "is_success"
+        term is added to the info_dict to specify whether the objective has
+        been met.
+
+        Parameters
+        ----------
+        action : array_like
+            actions to be performed by the agent
+
+        Returns
+        -------
+        array_like
+            next observation
+        float
+            environmental reward
+        bool
+            done mask
+        dict
+            extra information dictionary
+        """
+        # Run environment update.
+        obs, rew, done, info = self.env.step(action)
+        ob = obs['observation']
+        if self.use_contexts:
+            # Add success to the info dict
+            dist = self.contextual_reward(
+                states=self.prev_obs,
+                next_states=ob,
+                goals=self.current_context,
+            )
+            #dist = np.linalg.norm(obs[self.context_range.] - self.current_context)
+            #info["is_success"] = abs(dist) < FETCH_DISTANCE_THRESHOLD * FETCH_REWARD_SCALE
+
+        # Check if the time horizon has been met.
+        self.step_number += 1
+        done = done or self.step_number == self.horizon
+        self.prev_obs = ob
+        if not self.use_contexts:
+            ob = np.concatenate((ob, obs['desired_goal']))    
+        return ob, rew, done, info
+    @property
+    def context_space(self):
+        """Return the shape and bounds of the contextual term."""
+        # Check if the environment is using contexts, and if not, return a None
+        # value as the context space.
+        if self.use_contexts:
+            return Box(low=np.asarray(self.context_range[0]),
+                        high=np.asarray(self.context_range[1]))
+        else:
+            return None
+
+    def reset(self):
+        """Reset the environment.
+
+        If the environment is using the contextual setting, a new context is
+        issued.
+
+        Returns
+        -------
+        array_like
+            initial observation
+        """
+        # Reset the step counter.
+        self.step_number = 0
+        ob = self.env.reset()
+        self.prev_obs = ob['observation']
+        if not self.use_contexts:
+            return np.concatenate((ob['observation'], ob['desired_goal']))    
+        else:
+            self.current_context = ob['desired_goal']
+        return ob['observation']
+
+class SimpleFetchWrapper(gym.Wrapper):
+    def __init__(self,
+                 env_id,
+                 horizon=50):
+        self.horizon = horizon
+        self.step_number = 0
+        
+        self.env = FlattenDictWrapper(gym.make(env_id + "-v1"), ['observation', 'desired_goal'])
+        self.action_space = self.env.action_space
+        self.observation_space = self.env.observation_space
+        
+        # contextual variables
+        self.use_contexts = False
+        
+    def clip_obs(self, obs):
+        return np.clip(obs, -200, 200)
+    
+    def step(self, action):
+        """Advance the environment by one simulation step.
+
+        If the environment is using the contextual setting, an "is_success"
+        term is added to the info_dict to specify whether the objective has
+        been met.
+
+        Parameters
+        ----------
+        action : array_like
+            actions to be performed by the agent
+
+        Returns
+        -------
+        array_like
+            next observation
+        float
+            environmental reward
+        bool
+            done mask
+        dict
+            extra information dictionary
+        """
+        # Run environment update.
+        obs, rew, done, info = self.env.step(action)
+
+        # Check if the time horizon has been met.
+        self.step_number += 1
+        return self.clip_obs(obs), rew, done, info
+    @property
+    def context_space(self):
+        """Return the shape and bounds of the contextual term."""
+        # Check if the environment is using contexts, and if not, return a None
+        # value as the context space.
+        return None
+
+    def reset(self):
+        """Reset the environment.
+
+        If the environment is using the contextual setting, a new context is
+        issued.
+
+        Returns
+        -------
+        array_like
+            initial observation
+        """
+        # Reset the step counter.
+        self.step_number = 0
+        ob = self.env.reset()
+        return self.clip_obs(ob)

@@ -114,6 +114,7 @@ class ActorCriticPolicy(object):
         self.layer_norm = layer_norm
         self.act_fun = act_fun
         self.use_huber = use_huber
+        print(locals())
 
     def initialize(self):
         """Initialize the policy.
@@ -235,7 +236,7 @@ class ActorCriticPolicy(object):
         array_like
             the processed observation
         """
-        if context is not None:
+        if context is not None and context[0] is not None:
             context = context.flatten() if axis == 0 else context
             obs = np.concatenate((obs, context), axis=axis)
         return obs

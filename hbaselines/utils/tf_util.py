@@ -210,6 +210,19 @@ def apply_squashing_func(mu_, pi_, logp_pi):
 
     return deterministic_policy, policy, logp_pi
 
+def apply_squashing_func_2(mu, pi, logp_pi):
+    # Adjustment to log prob
+    # NOTE: This formula is a little bit magic. To get an understanding of where it
+    # comes from, check out the original SAC paper (arXiv 1801.01290) and look in
+    # appendix C. This is a more numerically-stable equivalent to Eq 21.
+    # Try deriving it yourself as a (very difficult) exercise. :)
+    logp_pi -= tf.reduce_sum(2*(np.log(2) - pi - tf.nn.softplus(-2*pi)), axis=1)
+
+    # Squash those unbounded actions!
+    mu = tf.tanh(mu)
+    pi = tf.tanh(pi)
+    return mu, pi, logp_pi
+
 
 def print_params_shape(scope, param_type):
     """Print parameter shapes and number of parameters.

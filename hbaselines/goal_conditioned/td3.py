@@ -203,8 +203,15 @@ class GoalConditionedPolicy(BaseGoalConditionedPolicy):
         fitness = []
         batch_size, goal_dim, num_samples = meta_actions.shape
         _, _, meta_period = worker_actions.shape
-
+        
+        
+        # Make this shit batched lessgo
+        #tiled_worker_obses_per_sample = np.tile(
+        #    worker_obses.T
+        #)
+        
         # Loop through the elements of the batch.
+        """
         for i in range(batch_size):
             # Extract the candidate goals for the current element in the batch.
             # The worker observations and actions from the meta period of the
@@ -270,8 +277,50 @@ class GoalConditionedPolicy(BaseGoalConditionedPolicy):
                     normalized_error[j * meta_period: (j+1) * meta_period])
 
             fitness.append(fitness_per_sample)
-
         return np.array(fitness)
+        """
+        # NEW, batched version!
+        batched_goals_per_sample = np.transpose(meta_actions, (0, 2, 1))
+        batched_worker_obses_per_sample = np.transpose(worker_obses, (0, 2, 1))
+        batched_worker_actions_per_sample = np.transpose(worker_actions, (0, 2, 1))
+        
+        batched_fitness_per_sample = np.zeros((batch_size, num_samples)) 
+        
+        batched_tiled_worker_obses_per_sample = np.tile(
+            batched_worker_obses_per_sample[:, :-1, :-goal_dim],
+            (1, num_samples, 1)
+        )
+        batched_tiled_goals_per_sample = np.tile(
+            batched_goals_per_sample, (1, 1, meta_period)).reshape(
+            (-1, num_samples * meta_period, goal_dim))
+        if self.relative_goals:
+            batched_goal_diff = batched_worker_obses_per_sample[:, :-1, :] - np.tile(
+                np.expand_dims(batched_worker_obses_per_sample[:, 0, :], 1), (1, meta_period, 1))
+            batched_tiled_goals_per_sample += \
+                np.tile(batched_goal_diff, (1, num_samples, 1))[:, :, self.goal_indices]
+        flatten = lambda x: np.reshape(x, (x.shape[0] * x.shape[1], -1))
+                                                
+        batched_pred_actions = self.policy[-1].get_action(
+            flatten(batched_tiled_worker_obses_per_sample),
+            flatten(batched_tiled_goals_per_sample),
+            apply_noise=False,
+            random_actions=False
+        )
+        
+        batched_pred_actions = np.reshape(batched_pred_actions, 
+                                            (batched_tiled_worker_obses_per_sample.shape[0], 
+                                            batched_tiled_worker_obses_per_sample.shape[1],
+                                            -1))
+        batched_normalized_error = -np.mean(
+            np.square(
+                np.tile(batched_worker_actions_per_sample, (1, num_samples, 1))
+                - batched_pred_actions
+            ),
+            axis=2
+        )
+        batched_normalized_error_expanded = np.reshape(batched_normalized_error, (-1, num_samples, meta_period))
+        batched_fitness_per_sample = np.sum(batched_normalized_error_expanded, -1)
+        return batched_fitness_per_sample
 
     # ======================================================================= #
     #                      Auxiliary methods for HRL-CG                       #
