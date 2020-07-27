@@ -1,0 +1,8 @@
+clusters:   # other clusters do not support our jobs yet
+   cluster:
+    appid: __appid__
+    appkey: __appkey__
+    endpoint: idc-train.hobot.cc
+    hdfs: hdfs://hobot-bigdata/
+
+current-cluster: cluster

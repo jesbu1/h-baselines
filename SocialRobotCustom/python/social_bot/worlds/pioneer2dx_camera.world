@@ -1,0 +1,114 @@
+<?xml version="1.0" ?>
+<sdf version="1.5">
+  <world name="default">
+    <physics type="ode">
+      <max_step_size>0.005</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>0</real_time_update_rate>
+    </physics>
+    <!-- Ground -->
+    <include>
+      <uri>model://texture_ground_plane</uri>
+    </include>
+    <!-- A global light source -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Pioneer2dx model -->
+    <include>
+      <uri>model://pioneer2dx_noplugin</uri>
+    </include>
+
+    <model name="goal">
+      <pose>1 1 0 0 0 0</pose>
+      <link name ="link">
+        <pose>0 0 0 0 0 0</pose>
+        <collision name ="collision">
+          <geometry>
+            <sphere><radius>0.1</radius></sphere>
+          </geometry>
+        </collision>
+        <visual name ='visual'>
+          <material>
+            <ambient> 0.5 0 0 1.0 </ambient>
+            <diffuse> 1.0 0 0 1.0 </diffuse>
+            <specular> 1.0 1.0 1.0 1.0 </specular>
+          </material>
+          <geometry>
+            <sphere><radius>0.1</radius></sphere>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+    
+    <model name="south_wall">
+      <static>1</static>
+      <pose>1.5 0 0.1 0 0 0</pose>
+      <link name ="link">
+        <pose>0 0 0 0 0 0</pose>
+        <collision name ="collision">
+          <geometry>
+            <box><size>0.2 2.8 0.2</size></box>
+          </geometry>
+        </collision>
+        <visual name ='visual'>
+          <geometry>
+            <box><size>0.2 2.8 0.2</size></box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+    <model name="north_wall">
+      <static>1</static>
+      <pose>-1.5 0 0.1 0 0 0</pose>
+      <link name ="link">
+        <pose>0 0 0 0 0 0</pose>
+        <collision name ="collision">
+          <geometry>
+            <box><size>0.2 2.8 0.2</size></box>
+          </geometry>
+        </collision>
+        <visual name ='visual'>
+          <geometry>
+            <box><size>0.2 2.8 0.2</size></box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+    <model name="east_wall">
+      <static>1</static>
+      <pose>0 1.5 0.1 0 0 0</pose>
+      <link name ="link">
+        <pose>0 0 0 0 0 0</pose>
+        <collision name ="collision">
+          <geometry>
+            <box><size>2.8 0.2 0.2</size></box>
+          </geometry>
+        </collision>
+        <visual name ='visual'>
+          <geometry>
+            <box><size>2.8 0.2 0.2</size></box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+    <model name="west_wall">
+      <static>1</static>
+      <pose>0 -1.5 0.1 0 0 0</pose>
+      <link name ="link">
+        <pose>0 0 0 0 0 0</pose>
+        <collision name ="collision">
+          <geometry>
+            <box><size>2.8 0.2 0.2</size></box>
+          </geometry>
+        </collision>
+        <visual name ='visual'>
+          <geometry>
+            <box><size>2.8 0.2 0.2</size></box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

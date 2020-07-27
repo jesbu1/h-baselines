@@ -1,0 +1,38 @@
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  labels:
+    name: xserver-daemon
+  name: xserver-daemon
+  namespace: kubeflow
+spec:
+  selector:
+    matchLabels:
+      name: xserver-daemon
+  template:
+    metadata:
+      labels:
+        name: xserver-daemon
+    spec:
+      containers:
+      - image: ${IMAGE}
+        imagePullPolicy: IfNotPresent
+        name: xserver-daemon
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /tmp/.X11-unix
+          name: xsocket
+      nodeSelector:
+        ${selector_name}: ${selector_value}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      volumes:
+      - hostPath:
+          path: /var/xserver-daemon
+          type: DirectoryOrCreate
+        name: xsocket
+  templateGeneration: 2
+  updateStrategy:
+    type: OnDelete

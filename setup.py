@@ -39,8 +39,8 @@ setup(
     version=__version__,
     distclass=BinaryDistribution,
     cmdclass={"build_ext": BuildExt},
-    packages=find_packages(),
-    install_requires=_read_requirements_file(),
+    #packages=find_packages(),
+    #install_requires=_read_requirements_file(),
     description='h-baselines: a repository of high-performing and benchmarked '
                 'hierarchical reinforcement learning models and algorithm',
     author='Aboudy Kreidieh',

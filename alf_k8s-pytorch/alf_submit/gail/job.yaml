@@ -1,0 +1,17 @@
+REQUIRED:
+#  WARNNING: JOB_NAME must be uniq
+  JOB_NAME: "__job_name__"
+  JOB_PASSWD: "+-*/"
+  UPLOAD_DIR: "job"
+  WORKER_MIN_NUM: 1
+  WORKER_MAX_NUM: 1
+  GPU_PER_WORKER: __gpu_per_worker__
+  RUN_SCRIPTS: "${WORKING_PATH}/job.sh"
+  #PROJECT_ID: "TEAM-ALGORITHM-RD2" # us
+  PROJECT_ID: "TEAM-AI-COMMON" # idc
+
+OPTIONAL:
+  PRIORITY: 3   # [1-5], highest:5
+  DOCKER_IMAGE: "docker.hobot.cc/rl/hiro:latest" 
+  WALL_TIME: 7200   # max run minutes: default 7200 = 5days
+  JOB_TYPE: "train"

@@ -1,0 +1,29 @@
+FROM ubuntu:18.04
+
+MAINTAINER yingxiang.hong@horizon.ai
+
+# replace source list
+COPY ./sources.list /etc/apt/sources.list
+
+# update
+RUN apt-get update  && apt install -y wget
+
+# install nvidia
+# please make sure version matches
+
+# install nvidia driver
+RUN wget 'http://cn.download.nvidia.com/XFree86/Linux-x86_64/410.93/NVIDIA-Linux-x86_64-410.93.run' \
+    && chmod +x NVIDIA-Linux-x86_64-410.93.run \
+    && apt install -y kmod \
+    && ./NVIDIA-Linux-x86_64-410.93.run -a -s --no-kernel-module  --no-x-check \
+    && rm -f NVIDIA-Linux-x86_64-410.93.run
+
+
+# install xorg
+RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y  xserver-xorg \
+    mesa-utils \
+    x11-xserver-utils
+
+# start xserver
+COPY ./start_x.sh /opt
+CMD ["/opt/start_x.sh"]

@@ -1,0 +1,10 @@
+# training & playing with Agent Learning Framework (Alf)
+# python -m alf.bin.train --root_dir=~/tmp/icub_sac --gin_file=icubwalk_sac.gin --alsologtostderr
+
+include 'common_nonimage_sac.gin'
+import social_bot
+
+# environment config
+create_environment.env_name="SocialBot-ICubWalkPID-v0"
+create_environment.num_parallel_environments=12
+create_environment.env_load_fn=@suite_socialbot.load

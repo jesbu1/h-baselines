@@ -1,0 +1,29 @@
+# training & playing with Agent Learning Framework (Alf)
+# python -m alf.bin.train --root_dir=~/tmp/img_ac --gin_file=goaltask_img_ac_pioneer.gin --alsologtostderr
+# python -m alf.bin.play --root_dir=~/tmp/img_ac --gin_file=goaltask_img_ac_pioneer.gin
+
+include 'simple_navigation_ac.gin'
+
+# environment config
+import alf.environments.wrappers
+create_environment.env_name='SocialBot-PlayGround-v0'
+PlayGround.use_image_observation=True
+create_environment.num_parallel_environments=12
+PlayGround.resized_image_size=(64, 64)
+
+# algorithm config
+CONV_LAYER_PARAMS=((16, 3, 2), (32, 3, 2))
+actor/ActorDistributionNetwork.fc_layer_params=(256,)
+actor/ActorDistributionNetwork.activation_fn=@tf.nn.elu
+actor/ActorDistributionNetwork.conv_layer_params=%CONV_LAYER_PARAMS
+actor/ActorDistributionNetwork.continuous_projection_net=@NormalProjectionNetwork
+NormalProjectionNetwork.init_means_output_factor=1e-10
+NormalProjectionNetwork.std_bias_initializer_value=0.0
+
+value/ValueNetwork.fc_layer_params=(256,)
+value/ValueNetwork.activation_fn=@tf.nn.elu
+value/ValueNetwork.conv_layer_params=%CONV_LAYER_PARAMS
+ac/Adam.learning_rate=2e-4
+Agent.gradient_clipping=0.5
+
+

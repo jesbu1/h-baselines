@@ -1,0 +1,21 @@
+MuJoCo Pro Site license activation key, number 7128, type 6.
+
+Issued to Horizon Robotics, China (3 users).
+
+Expires May 22, 2021.
+
+Do not share this file with anyone other than the users covered
+by your license agreement with Roboti LLC. This file activates
+MuJoCo Pro on any computer running any supported OS.
+
+Do not modify this file. Its entire content, including the
+plain text section, is used by the activation manager.
+
+76595b648252303234aa073bdf2f73db1dcf1bc3e99b8fc82801d6624fa7ce42
+076f07f5dcb383fc3e56460684248be600cff8eb8d4d95695317866a137f340a
+136a0f42e409240d62f08dae4dcf5463a20a1fadac4d636e527a9232c82fe5f8
+7323f4b2eb88be9c28579579e9cca77b4966e41e02d2e7014249abea4926305b
+8053c22d4392608d2f4198c61b72cb29384049d718cbf5b95f2a5b7ebe4670fe
+bfc430a6b73ea1a02a1e9f95f3dda7efcca0a49fa150e9dd8038dea067f839fc
+8693d916900f48e1e37b7a26ddba249a1088e15a632e5124e54c517c5a69ae0c
+532fe70e64f0c01b31b5fbaafc1d1d8f2dedb949caf63a868409ebaf935787ec

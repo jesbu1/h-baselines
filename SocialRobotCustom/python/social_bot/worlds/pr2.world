@@ -1,0 +1,78 @@
+<?xml version="1.0" ?>
+<sdf version="1.5">
+  <world name="default">
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>0</real_time_update_rate>
+    </physics>
+    <!-- Ground -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <!-- A global light source -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <model name="pr2">
+      <include>
+        <uri>model://pr2_noplugin</uri>
+      </include>
+    </model>
+
+    <model name="low_table">
+      <pose>0.9 0 0 0 0 1.57 </pose>
+      <include>
+        <uri>model://low_table</uri>
+      </include>
+    </model>
+
+    <model name="beer">
+      <pose>1.0 -0.4 0.43 0 0 0</pose>
+      <link name="link">
+        <collision name="box_collision">
+          <geometry>
+            <box>
+              <size>0.04 0.04 0.1</size>
+            </box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>1.0</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <inertial>
+          <mass>0.15</mass>
+        </inertial>
+        <visual name="visual">
+          <material>
+            <ambient> 0.5 0 0 1.0 </ambient>
+            <diffuse> 1.0 0 0 1.0 </diffuse>
+            <specular> 1.0 1.0 1.0 1.0 </specular>
+          </material>
+          <geometry>
+            <box>
+              <size>0.04 0.04 0.1</size>
+            </box>
+          </geometry>
+        </visual>
+      </link>
+
+      <!-- <gazebo reference="link"> -->
+      <!--   <turnGravityOff>false</turnGravityOff> -->
+      <!--   <genTexCoord>true</genTexCoord> -->
+      <!--   <kp>100000000.0</kp> -->
+      <!--   <kd>1000000.0</kd> -->
+      <!--   <controller:gazebo_ros_grasp_hack name="cup_grasp_hack_controller" plugin="libgazebo_ros_grasp_hack.so"> -->
+      <!--     <alwaysOn>true</alwaysOn> -->
+      <!--     <updateRate>1000</updateRate> -->
+      <!--    </controller:gazebo_ros_grasp_hack> -->
+      <!-- </gazebo> -->
+    </model>
+  </world>
+</sdf>
