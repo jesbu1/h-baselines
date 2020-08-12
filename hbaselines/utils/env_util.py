@@ -374,7 +374,7 @@ ENV_ATTRIBUTES = {
             dtype=np.float32,
         ),
         "state_indices": [i for i in range(18)],
-        "env": lambda *args : SimpleSocialBotWrapper("SocialBot-PlayGround-v0", task="Goal"),
+        "env": lambda *args : SimpleSocialBotWrapper("SocialBot-PlayGround-v0", task="Goal", horizon=100),
     },
     "KickBallTask": {
         "meta_ac_space": lambda relative_goals: Box(
@@ -383,7 +383,7 @@ ENV_ATTRIBUTES = {
             dtype=np.float32,
         ),
         "state_indices": [i for i in range(6)] + [i for i in range(12, 30)],
-        "env": lambda *args : SimpleSocialBotWrapper("SocialBot-PlayGround-v0", task="KickingBall"),
+        "env": lambda *args : SimpleSocialBotWrapper("SocialBot-PlayGround-v0", task="KickingBall", horizon=200),
     },
     
 

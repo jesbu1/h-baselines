@@ -182,7 +182,7 @@ class GoalTask(Task):
                  distraction_penalty=0.5,
                  random_agent_orientation=False,
                  sparse_reward=True,
-                 random_range=8.0,
+                 random_range=5.0,
                  polar_coord=True,
                  random_goal=False,
                  use_curriculum_training=False,
@@ -195,11 +195,11 @@ class GoalTask(Task):
                  percent_full_range_in_curriculum=0.1,
                  max_reward_q_length=100,
                  reward_weight=1.0,
-                 move_goal_during_episode=False,
-                 end_episode_after_success=True,
+                 move_goal_during_episode=True,
+                 end_episode_after_success=False,
                  success_with_angle_requirement=True,
                  additional_observation_list=[],
-                 use_egocentric_states=True,
+                 use_egocentric_states=False,
                  egocentric_perception_range=0):
         """
         Args:
@@ -830,9 +830,16 @@ class KickingBallTask(Task):
                  env,
                  max_steps,
                  gate_distance=5.0,
-                 random_range=2.0,
+                 random_range=4.0,
                  target_speed=2.0,
                  reward_weight=1.0,
+                 distraction_list=[
+                     'coke_can', 'table', 'car_wheel',
+                     #'plastic_cup', 'beer'
+                 ],
+                 distraction_penalty_distance_thresh=0,
+                 distraction_penalty=0.5,
+                 curriculum_distractions=True,
                  sparse_reward=True):
         """
         Args:
@@ -849,11 +856,17 @@ class KickingBallTask(Task):
         """
         super().__init__(
             env=env, max_steps=max_steps, reward_weight=reward_weight)
+        self._max_play_ground_size = 5  # play ground will be (-5, 5) for both x and y axes.
         self._random_range = random_range
         self._target_speed = target_speed
         self._sparse_reward = sparse_reward
-        print(sparse_reward)
         self._gate_distance = gate_distance
+        self._distraction_list = distraction_list
+        self._distraction_penalty_distance_thresh = distraction_penalty_distance_thresh
+        if distraction_penalty_distance_thresh > 0:
+            assert distraction_penalty_distance_thresh < success_distance_thresh
+        self._distraction_penalty = distraction_penalty
+        self._curriculum_distractions = curriculum_distractions
         # By looking up the 'robocup_3Dsim_goal' model file:
         self._gate_width = 2.1
         self._gate_post_radius = 0.05
@@ -862,6 +875,7 @@ class KickingBallTask(Task):
             name="gate",
             pose="-%s 0 0 0 -0 3.14159265" % gate_distance)
         self._env.insert_model(model="ball", pose="1.50 1.5 0.2 0 -0 0")
+        self._env.insert_model_list(self._distraction_list)
 
     def run(self):
         """ Start a teaching episode for this task. """
@@ -878,6 +892,7 @@ class KickingBallTask(Task):
             np.array(ball_loc)[:2] - np.array(gate_loc)[:2])
         steps = 0
         hitted_ball = False
+        prev_min_dist_to_distraction = 100
         while steps < self._max_steps:
             steps += 1
             if not hitted_ball and not self._sparse_reward:
@@ -904,15 +919,24 @@ class KickingBallTask(Task):
                         hitted_ball = True
                 agent_sentence = yield TeacherAction(reward=progress_reward)
             else:
+                agent_loc, dir = self._get_agent_loc()
                 gate_loc, _ = gate.get_pose()
                 ball_loc, _ = ball.get_pose()
                 dist = np.linalg.norm(
                     np.array(ball_loc)[:2] - np.array(gate_loc)[:2])
+                dir = np.array([math.cos(dir[2]), math.sin(dir[2])])
+                gate_dir = (np.array(ball_loc[0:2]) - np.array(
+                    agent_loc[0:2])) / dist
+                dot = sum(dir * gate_dir)
+                distraction_penalty, prev_min_dist_to_distraction = (
+                    self._get_distraction_penalty(agent_loc, dot,
+                                                prev_min_dist_to_distraction))
                 if self._in_the_gate(ball_loc):
                     if self._sparse_reward:
                         reward = 1.
                     else:
                         reward = 100.
+                    reward = reward - distraction_penalty
                     agent_sentence = yield TeacherAction(
                         reward=reward, sentence="well done", done=True,
                         success=True)
@@ -921,6 +945,7 @@ class KickingBallTask(Task):
                         reward = 0.
                     else:
                         reward = self._target_speed + 3 - dist / init_gate_dist
+                    reward = reward - distraction_penalty
                     agent_sentence = yield TeacherAction(
                         reward=reward)
         yield TeacherAction(reward=-1.0, sentence="failed", done=True)
@@ -954,6 +979,100 @@ class KickingBallTask(Task):
             if not self._in_the_gate(loc):
                 break
         ball.set_pose((loc, (0, 0, 0)))
+        agent_loc, agent_dir = self._get_agent_loc()
+        avoid_locations = [agent_loc, np.asarray(loc)]
+        distractions = OrderedDict()
+        for item in self._distraction_list:
+            distractions[item] = 1
+        if len(distractions) and self._curriculum_distractions:
+            for item, _ in distractions.items():
+                distraction = self._world.get_agent(item)
+                loc = self._move_obj(
+                    obj=distraction,
+                    agent_loc=agent_loc,
+                    agent_dir=agent_dir,
+                    is_goal=False,
+                    avoid_locations=avoid_locations)
+                avoid_locations.append(loc)
+    
+    def _get_agent_loc(self):
+        loc, agent_dir = self._agent.get_pose()
+        if self._agent.type.find('icub') != -1:
+            # For agent icub, we need to use the average pos here
+            loc = ICubAuxiliaryTask.get_icub_extra_obs(self._agent)[:3]
+        loc = np.array(loc)
+        return loc, agent_dir
+    
+    def _move_obj(self,
+                  obj,
+                  agent_loc,
+                  agent_dir,
+                  is_goal=True,
+                  avoid_locations=[]):
+        range = self._random_range
+        self._is_full_range_in_curriculum = False
+        attempts = 0
+        while True:
+            attempts += 1
+            dist = random.random() * range
+            angle_range = 360
+            angle = math.radians(
+                math.degrees(agent_dir[2]) + random.random() * angle_range -
+                angle_range / 2)
+            loc = (dist * math.cos(angle), dist * math.sin(angle),
+                   0) + agent_loc
+
+            self._initial_dist = np.linalg.norm(loc - agent_loc)
+            satisfied = True
+            if (abs(loc[0]) > self._max_play_ground_size or abs(loc[1]) >
+                    self._max_play_ground_size):  # not within walls
+                satisfied = False
+            for avoid_loc in avoid_locations:
+                dist = np.linalg.norm(loc - avoid_loc)
+                if dist < 0.5:
+                    satisfied = False
+                    break
+            if satisfied or attempts > 10000:
+                if not satisfied:
+                    logging.warning(
+                        "Took forever to find satisfying " +
+                        "object location. " +
+                        "agent_loc: {}, range: {}, max_size: {}.".format(
+                            str(agent_loc), str(range),
+                            str(self._max_play_ground_size)))
+                break
+        self._prev_dist = self._initial_dist
+        obj.reset()
+        obj.set_pose((loc, (0, 0, 0)))
+        return loc
+    
+    def _get_distraction_penalty(self, agent_loc, dot,
+                                 prev_min_dist_to_distraction):
+        """
+        Calculate penalty for hitting/getting close to distraction objects
+        """
+        distraction_penalty = 0
+        if (self._distraction_penalty_distance_thresh > 0
+                and self._distraction_list):
+            curr_min_dist = 100
+            for obj_name in self._distraction_list:
+                obj = self._world.get_model(obj_name)
+                if not obj:
+                    continue
+                obj_loc, _ = obj.get_pose()
+                obj_loc = np.array(obj_loc)
+                distraction_dist = np.linalg.norm(agent_loc - obj_loc)
+                if (distraction_dist >=
+                        self._distraction_penalty_distance_thresh):
+                    continue
+                if distraction_dist < curr_min_dist:
+                    curr_min_dist = distraction_dist
+                if (prev_min_dist_to_distraction >
+                        self._distraction_penalty_distance_thresh):
+                    logging.debug("hitting object: " + obj_name)
+                    distraction_penalty += self._distraction_penalty
+            prev_min_dist_to_distraction = curr_min_dist
+        return distraction_penalty, prev_min_dist_to_distraction
 
 
 @gin.configurable
@@ -1151,7 +1270,9 @@ class PickAndPlace(Task):
                 agent_sentence = yield TeacherAction(
                     reward=reward, sentence="well done", done=True,
                     success=True)
-            else:
+        else:
+                #shaped reward modification
+                #0 if gripping else (gripping_feature - palm_dist)
                 shaped_reward = max(
                     2.0 - obj_dist / self._place_to_random_range,
                     1.0) if gripping else (gripping_feature - palm_dist)

@@ -10,34 +10,20 @@ import time
 import sys
 log_dir = sys.argv[1]
 num_gpus = 2
-max_worker_num = num_gpus * 3
+max_worker_num = num_gpus * 2
 nb_rollout_steps = 10 * 100
 nb_train_steps = 100
 meta_update_freq = 1
 actor_update_freq = 1
 batch_size = 1024
-num_envs = 6
-COMMAND = f"python3 experiments/run_hiro.py {log_dir} KickBallTask --alg TD3 --evaluate --n_training 1 --total_steps 5000000 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --nb_rollout_steps {nb_rollout_steps} --actor_lr 3e-4 --critic_lr 3e-4 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.99 --nb_train_steps {nb_train_steps} --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --horizon 100"
+num_envs = 2
+COMMAND = f"python3 experiments/run_hiro.py {log_dir} KickBallTask --alg TD3 --evaluate --n_training 2 --total_steps 4950000 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --nb_rollout_steps {nb_rollout_steps} --actor_lr 3e-4 --critic_lr 3e-4 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.99 --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --horizon 200"
 
-meta_periods = (3, 5, 8)
-buffer_sizes = (500000, 1500000, 3000000)
+meta_periods = (3, 5)
+buffer_sizes = (500000, 2000000)
 noises = (0.1, 0.3)
+nb_train_stepss = (40, 80, 150, 320)
 
-product = itertools.product(*(meta_periods, buffer_sizes, noises))
-for total, _ in enumerate(product):
-    continue
-#for i, param_config in enumerate(product):
-#    if i > int(total//2):
-#        continue
-    #meta_period, buffer_size, noise = param_config
-    #command = "%s --meta_period %d --buffer_size %d --noise %0.2f" % (COMMAND, meta_period, buffer_size, noise)
-    #print(command + " &&")
-    #os.system(command)
-    #process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
-    #output, error = process.communicate()
-    #stream = os.popen(command)
-    #print(stream.read())
-    #print(output, error)
 
 def _init_device_queue(max_worker_num):
     m = Manager()
@@ -56,12 +42,10 @@ def run():
         processes=max_worker_num, maxtasksperchild=1)
     device_queue = _init_device_queue(max_worker_num)
 
-    product = itertools.product(*(meta_periods, buffer_sizes, noises))
+    product = itertools.product(*(meta_periods, buffer_sizes, noises, nb_train_stepss))
     for task_count, values in enumerate(product):
-        if task_count > int(total//2):
-            continue
-        meta_period, buffer_size, noise = values
-        command = "%s --meta_period %d --buffer_size %d --noise %0.2f" % (COMMAND, meta_period, buffer_size, noise)
+        meta_period, buffer_size, noise, nb_train_steps = values
+        command = "%s --meta_period %d --buffer_size %d --noise %0.2f --nb_train_steps %d" % (COMMAND, meta_period, buffer_size, noise, nb_train_steps)
         process_pool.apply_async(
             func=_worker,
             args=[command, device_queue],
@@ -73,7 +57,7 @@ def run():
 def _worker(command, device_queue):
     # sleep for random seconds to avoid crowded launching
     try:
-        time.sleep(random.uniform(0, 30))
+        time.sleep(random.uniform(0, 60))
 
         device = device_queue.get()
 

@@ -9,22 +9,19 @@ import traceback
 import time
 import sys
 log_dir = sys.argv[1]
-num_gpus = 4
-max_worker_num = num_gpus * 1
+num_gpus = 2
+max_worker_num = num_gpus * 2
 nb_rollout_steps = 38 * 50
 nb_train_steps = 40
 meta_update_freq = 1
 actor_update_freq = 1
 batch_size = 4864
-num_envs = 10
+num_envs = 8
 COMMAND1 = f"python3 experiments/run_hiro.py {log_dir}"
 COMMAND2 = f"--alg TD3 --evaluate --n_training 1 --total_steps 4750000 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --nb_rollout_steps {nb_rollout_steps} --actor_lr 1e-3 --critic_lr 1e-3 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.98 --nb_train_steps {nb_train_steps} --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --meta_period 5 --buffer_size 500000 --noise 0.1"
 
-#meta_periods = (3)
-#buffer_sizes = (1500000)
-#noises = (0.3)
 #envs = ["FetchReach", "FetchSlide", "FetchPickAndPlace", "FetchPush"]
-envs = ["FetchSlide"]
+envs = ["FetchPickAndPlace"]
 
 
 def _init_device_queue(max_worker_num):
