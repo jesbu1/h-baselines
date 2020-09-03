@@ -689,7 +689,7 @@ class OffPolicyRLAlgorithm(object):
               log_dir=None,
               seed=None,
               log_interval=2000,
-              eval_interval=50000,
+              eval_interval=100000,
               save_interval=10000,
               initial_exploration_steps=10000):
         """Perform the complete training operation.

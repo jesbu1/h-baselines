@@ -10,19 +10,19 @@ import time
 import sys
 log_dir = sys.argv[1]
 num_gpus = 2
-max_worker_num = num_gpus * 2
-nb_rollout_steps = 10 * 100
-nb_train_steps = 100
+max_worker_num = num_gpus * 1 + 1
+nb_train_steps = 400
 meta_update_freq = 1
 actor_update_freq = 1
 batch_size = 1024
-num_envs = 6
+num_envs = 10
 COMMAND1 = f"python3 experiments/run_hiro.py {log_dir}"
-COMMAND2 = f"--alg TD3 --evaluate --n_training 1 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --nb_rollout_steps {nb_rollout_steps} --actor_lr 3e-4 --critic_lr 3e-4 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.99 --nb_train_steps {nb_train_steps} --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --meta_period 3 --buffer_size 1500000 --noise 0.3"
+COMMAND2 = f"--alg TD3 --evaluate --n_training 1 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --actor_lr 1e-4 --critic_lr 1e-4 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.99 --nb_train_steps {nb_train_steps} --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --meta_period 3 --buffer_size 500000 --noise 0.1"
 
 envs = ["GoalTask", "KickBallTask"]
-total_steps = [2500000, 5000000]
+total_steps = [4950000, 4950000]
 horizons = [100, 200]
+nb_rollout_steps = [10 * 100, 10 * 200]
 
 
 def _init_device_queue(max_worker_num):
@@ -44,7 +44,7 @@ def run():
 
 	for i in range(3):
 		for i, env in enumerate(envs):
-			command = "%s %s --total_steps %d --horizon %d %s" % (COMMAND1, env, total_steps[i], horizons[i], COMMAND2)
+			command = "%s %s --total_steps %d --horizon %d --nb_rollout_steps %d %s" % (COMMAND1, env, total_steps[i], horizons[i], nb_rollout_steps[i], COMMAND2)
 			process_pool.apply_async(
 				func=_worker,
 				args=[command, device_queue],

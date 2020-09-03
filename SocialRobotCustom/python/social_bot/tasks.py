@@ -1090,7 +1090,7 @@ class Reaching3D(Task):
                  max_steps,
                  random_range=0.65,
                  success_distance_thresh=0.1,
-                 reward_shaping=True,
+                 reward_shaping=False,
                  reward_weight=1.0):
         """
         Args:
@@ -1128,7 +1128,7 @@ class Reaching3D(Task):
             dist = np.linalg.norm(np.array(goal_loc) - np.array(reaching_loc))
             if dist < self._success_distance_thresh:
                 agent_sentence = yield TeacherAction(
-                    reward=1.0, sentence="well done", done=True)
+                    reward=1.0, sentence="well done", success=True, done=True)
             else:
                 reward = (-dist) if self._reward_shaping else 0
                 agent_sentence = yield TeacherAction(reward=reward, done=False)

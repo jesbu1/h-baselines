@@ -1051,7 +1051,7 @@ class SimpleSocialBotWrapper(gym.Wrapper):
                  horizon=100):
         self.horizon = horizon
         self.step_number = 0
-        task_map = dict(KickingBall=KickingBallTask, Goal=GoalTask) 
+        task_map = dict(KickingBall=KickingBallTask, Goal=GoalTask, Reach=Reaching3D) 
         port_range = [DEFAULT_SOCIALBOT_PORT]
         with SimpleSocialBotWrapper._get_unused_port(*port_range) as port:
             gym_spec = gym.spec(env_id)
@@ -1059,6 +1059,8 @@ class SimpleSocialBotWrapper(gym.Wrapper):
             if task_map[task] == KickingBallTask:
                 action_cost = 0.01
             elif task_map[task] == GoalTask:
+                action_cost = 0.01
+            elif task_map[task] == Reaching3D:
                 action_cost = 0.01
             self.env = gym_spec.make(port=port, tasks=[task_map[task]], action_cost=action_cost)
         self.action_space = self.env.action_space

@@ -16,13 +16,14 @@ nb_train_steps = 100
 meta_update_freq = 1
 actor_update_freq = 1
 batch_size = 1024
-num_envs = 8
-COMMAND = f"python3 experiments/run_hiro.py {log_dir} GoalTask --alg TD3 --evaluate --n_training 3 --total_steps 2500000 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --nb_rollout_steps {nb_rollout_steps} --actor_lr 3e-4 --critic_lr 3e-4 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.99 --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --horizon 100"
+num_envs = 10
+COMMAND = f"python3 experiments/run_hiro.py {log_dir} GoalTask --alg TD3 --evaluate --n_training 2 --total_steps 2500000 --verbose 1 --relative_goals --off_policy_corrections --eval_deterministic --num_envs {num_envs} --nb_rollout_steps {nb_rollout_steps} --actor_lr 3e-4 --critic_lr 3e-4 --use_huber --target_noise_clip 0.5 --batch_size {batch_size} --tau 0.05 --gamma 0.99 --meta_update_freq {meta_update_freq} --actor_update_freq {actor_update_freq} --intrinsic_reward_scale 1.0 --horizon 100"
 
 meta_periods = (3, 5)
 buffer_sizes = (500000, 2000000)
 noises = (0.1, 0.3)
-nb_train_stepss = (40, 80, 150, 320)
+#nb_train_stepss = (100, 200, 400)
+nb_train_stepss = (200, 400)
 
 def _init_device_queue(max_worker_num):
     m = Manager()

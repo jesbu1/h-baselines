@@ -68,7 +68,8 @@ class PlayGround(GazeboEnvBase):
     """
 
     def __init__(self,
-                 agent_type='pioneer2dx_noplugin',
+                 #agent_type='pioneer2dx_noplugin',
+                 agent_type='kuka_lwr_4plus',
                  world_name="play_ground.world",
                  tasks=[GoalTask],
                  with_language=False,
